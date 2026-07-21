@@ -20,16 +20,29 @@ def download_file(url: str, dest: Path) -> None:
     """Download a file with timeout and retry logic.
 
     Uses urlopen with timeout then writes to file (Python 3.8 compat).
+    Reads the response in chunks to avoid IncompleteRead on slow peers.
     """
     last_error = None
     for attempt in range(1, MAX_RETRIES + 1):
         try:
             with urlopen(url, timeout=DOWNLOAD_TIMEOUT) as response:
-                data = response.read()
-            dest.write_bytes(data)
+                expected = response.headers.get("Content-Length")
+                expected_len = int(expected) if expected else None
+                chunk_size = 64 * 1024
+                with dest.open("wb") as f:
+                    while True:
+                        chunk = response.read(chunk_size)
+                        if not chunk:
+                            break
+                        f.write(chunk)
             size = dest.stat().st_size
             if size == 0:
                 raise ValueError(f"Downloaded file is empty: {url}")
+            if expected_len is not None and size != expected_len:
+                raise ValueError(
+                    f"Downloaded file size mismatch for {url}: "
+                    f"expected {expected_len}, got {size}"
+                )
             return
         except (URLError, TimeoutError, OSError, ValueError) as e:
             last_error = e
