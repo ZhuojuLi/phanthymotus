@@ -93,7 +93,8 @@ RUN pip3 install --no-cache-dir -i ${PYPI_MIRROR} \
 ARG OCR_MODEL_BASE_URL=http://172.28.4.81:34567/lizhuoju/embodied-ai/ppocrv6-small-int8
 ARG OCR_MODEL_FALLBACK_BASE_URL=http://172.28.4.81:34567/lizhuoju/embodied-ai/ocr/ppocrv6-small-int8
 COPY perception/utils/ocr_model_downloader.py /tmp/ocr_model_downloader.py
-RUN python3 /tmp/ocr_model_downloader.py \
+RUN export no_proxy="localhost,127.0.0.1,172.28.4.81,172.28.0.0/16" && \
+    python3 /tmp/ocr_model_downloader.py \
     --base-url "${OCR_MODEL_BASE_URL}" \
     --output-dir /models/ocr/ppocrv6-small-int8 || \
     python3 /tmp/ocr_model_downloader.py \
