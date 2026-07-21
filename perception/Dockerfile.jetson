@@ -89,13 +89,6 @@ RUN pip3 install --no-cache-dir -i ${PYPI_MIRROR} \
     find "${RAPIDOCR_MODELS}" -type f -name '*.onnx' -delete && \
     python3 -c "import onnxruntime as ort; assert 'CPUExecutionProvider' in ort.get_available_providers()"
 
-# ── Offline ASR model ─────────────────────────────────────────────
-ARG ASR_OFFLINE_MODEL_BASE_URL=http://172.28.4.81:34567/zengzhitao/embodied-ai/official_paraformer
-COPY perception/utils/asr_model_downloader.py /tmp/asr_model_downloader.py
-RUN python3 /tmp/asr_model_downloader.py \
-    --base-url "${ASR_OFFLINE_MODEL_BASE_URL}" \
-    --output-dir /models/sherpa-onnx/asr-offline
-
 # ── OCR model (kept outside Git) ──────────────────────────────────
 ARG OCR_MODEL_BASE_URL=http://172.28.4.81:34567/lizhuoju/embodied-ai/ppocrv6-small-int8
 ARG OCR_MODEL_FALLBACK_BASE_URL=http://172.28.4.81:34567/lizhuoju/embodied-ai/ocr/ppocrv6-small-int8
