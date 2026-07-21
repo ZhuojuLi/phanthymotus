@@ -92,14 +92,24 @@ RUN pip3 install --no-cache-dir -i ${PYPI_MIRROR} \
 # ── OCR model (kept outside Git) ──────────────────────────────────
 ARG OCR_MODEL_BASE_URL=http://172.28.4.81:34567/lizhuoju/embodied-ai/ppocrv6-small-int8
 ARG OCR_MODEL_FALLBACK_BASE_URL=http://172.28.4.81:34567/lizhuoju/embodied-ai/ocr/ppocrv6-small-int8
-COPY perception/utils/ocr_model_downloader.py /tmp/ocr_model_downloader.py
 RUN export no_proxy="localhost,127.0.0.1,172.28.4.81,172.28.0.0/16" && \
-    python3 /tmp/ocr_model_downloader.py \
-    --base-url "${OCR_MODEL_BASE_URL}" \
-    --output-dir /models/ocr/ppocrv6-small-int8 || \
-    python3 /tmp/ocr_model_downloader.py \
-    --base-url "${OCR_MODEL_FALLBACK_BASE_URL}" \
-    --output-dir /models/ocr/ppocrv6-small-int8
+    mkdir -p /models/ocr/ppocrv6-small-int8 && \
+    for name in det.onnx rec.onnx cls.onnx keys.txt; do \
+        url="${OCR_MODEL_BASE_URL}/${name}"; \
+        echo "Downloading ${url}"; \
+        if ! curl -fsSL --retry 3 --retry-delay 3 "${url}" -o "/models/ocr/ppocrv6-small-int8/${name}"; then \
+            url="${OCR_MODEL_FALLBACK_BASE_URL}/${name}"; \
+            echo "Fallback to ${url}"; \
+            curl -fsSL --retry 3 --retry-delay 3 "${url}" -o "/models/ocr/ppocrv6-small-int8/${name}"; \
+        fi; \
+    done && \
+    ls -lh /models/ocr/ppocrv6-small-int8/ && \
+    total=$(du -cb /models/ocr/ppocrv6-small-int8/*.onnx /models/ocr/ppocrv6-small-int8/keys.txt | tail -1 | cut -f1) && \
+    echo "Total size: ${total} bytes" && \
+    if [ "${total}" -gt $((15 * 1024 * 1024)) ]; then \
+        echo "ERROR: OCR model bundle exceeds 15 MiB"; \
+        exit 1; \
+    fi
 
 # ── Application code ───────────────────────────────────────────────
 WORKDIR /work
