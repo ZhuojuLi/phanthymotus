@@ -48,16 +48,12 @@ plugins:
 
   ocr:
     enabled: true
-    provider: rapidocr  # rapidocr | openai | qwen | tesseract | google
-    url: ""             # API URL (empty = default endpoint, for openai/qwen)
-    key: ""             # API Key (for openai/qwen)
-    model: ""           # model name (for openai/qwen)
-    language: "zh"      # default language hint
-    # RapidOCR local model settings
-    # The model directory must contain these four files flat:
-    #   det.onnx  rec.onnx  cls.onnx  keys.txt
-    # For PP-OCRv6-small-int8, det.onnx/rec.onnx are the int8 quantized models.
+    provider: rapidocr
+    url: ""
+    key: ""
+    model: ""
     model_dir: /models/ocr/ppocrv6-small-int8
+    language: zh
     use_angle_cls: true
     num_threads: 1
     max_side_len: 1600
