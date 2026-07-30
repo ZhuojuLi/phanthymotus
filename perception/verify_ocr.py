@@ -125,7 +125,7 @@ def main() -> int:
     assert ocr_cfg.get("enabled") is True, "ocr not enabled"
 
     # Use local model bundle for verification if it exists.
-    local_model_dir = script_dir / "models" / "ocr" / "ppocrv6-small-int8"
+    local_model_dir = script_dir / "models" / "ocr" / "ppocrv6-small-mnn"
     if local_model_dir.is_dir():
         ocr_cfg["model_dir"] = str(local_model_dir.resolve())
     print(f"[verify] OCR config: provider={ocr_cfg.get('provider')}, model_dir={ocr_cfg.get('model_dir')}")
@@ -154,24 +154,20 @@ def main() -> int:
     assert result.get("state") == "idle", f"unexpected state: {result.get('state')}"
     print(f"[verify] ocr/info result: {json.dumps(result, ensure_ascii=False, indent=2)}")
 
-    # Optional: if local models exist, verify RapidOCRAdapter can load and run.
-    model_dir = Path(ocr_cfg.get("model_dir", "/models/ocr/ppocrv6-small-int8"))
-    required = ("det.onnx", "rec.onnx", "cls.onnx", "keys.txt")
+    # Optional: if local models exist, verify the OCR adapter can load and run.
+    model_dir = Path(ocr_cfg.get("model_dir", "/models/ocr/ppocrv6-small-mnn"))
+    required = ("det.mnn", "rec.mnn", "keys.txt")
     if all((model_dir / name).is_file() for name in required):
-        print(f"[verify] Local models found in {model_dir}, testing RapidOCRAdapter...")
+        print(f"[verify] Local models found in {model_dir}, testing OCR adapter...")
         try:
-            from plugins.ocr_runtime import RapidOCRAdapter
+            from plugins.ocr import _build_ocr_adapter
         except ImportError as e:
-            print(f"[verify] rapidocr not installed in this environment ({e}), skipping inference")
+            print(f"[verify] OCR deps not installed in this environment ({e}), skipping inference")
             print("\n[verify] All structural checks passed.")
             return 0
         try:
-            adapter = RapidOCRAdapter(
-                str(model_dir),
-                use_angle_cls=ocr_cfg.get("use_angle_cls", True),
-                num_threads=int(ocr_cfg.get("num_threads", 1)),
-                max_side_len=int(ocr_cfg.get("max_side_len", 1600)),
-            )
+            adapter = _build_ocr_adapter(ocr_cfg)
+            assert adapter is not None, "adapter build returned None"
             sample = script_dir.parent / "docs" / "images" / "dashboard.png"
             if sample.is_file():
                 results = adapter.recognize(sample.read_bytes())
@@ -181,7 +177,7 @@ def main() -> int:
             else:
                 print(f"[verify] No sample image at {sample}, skipping inference")
         except Exception as e:
-            print(f"[verify] WARNING: RapidOCRAdapter test failed: {e}")
+            print(f"[verify] WARNING: OCR adapter test failed: {e}")
             import traceback
             traceback.print_exc()
             return 1

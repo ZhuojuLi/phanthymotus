@@ -1,7 +1,9 @@
 import importlib
+import json
 import sys
 import tempfile
 import threading
+import time
 import types
 import unittest
 from pathlib import Path
@@ -65,6 +67,16 @@ class OCRContractTest(unittest.TestCase):
     def setUpClass(cls):
         _install_ros_stubs()
         cls.ocr = importlib.import_module("plugins.ocr")
+        cls.ocr_runtime = importlib.import_module("plugins.ocr_runtime")
+
+    @staticmethod
+    def _jpeg(width, height):
+        return (
+            b"\xff\xd8\xff\xc0\x00\x11\x08"
+            + height.to_bytes(2, "big")
+            + width.to_bytes(2, "big")
+            + b"\x03\x01\x11\x00\x02\x11\x00\x03\x11\x00\xff\xd9"
+        )
 
     def test_tool_contract_uses_compressed_images_and_json_results(self):
         tool = self.ocr.TOOLS[0]
@@ -108,27 +120,280 @@ class OCRContractTest(unittest.TestCase):
                 {
                     "provider": "rapidocr",
                     "model_dir": "/models/ocr/ppocrv6-tiny",
+                    "device": "cuda",
+                    "device_id": 0,
+                    "gpu_mem_mb": 512,
                     "use_angle_cls": True,
                     "num_threads": 2,
                     "max_side_len": 1600,
+                    "large_image_strategy": {
+                        "enabled": True,
+                        "trigger_side": 2400,
+                    },
                 }
             )
 
         self.assertIs(result, expected)
         adapter.assert_called_once_with(
             "/models/ocr/ppocrv6-tiny",
+            backend="onnxruntime",
+            fallback_backend="",
+            fallback_model_dir="",
+            device="cuda",
+            device_id=0,
+            gpu_mem_mb=512,
             use_angle_cls=True,
             num_threads=2,
             max_side_len=1600,
+            large_image_strategy={
+                "enabled": True,
+                "trigger_side": 2400,
+            },
         )
 
-    def test_adapter_initialization_failure_does_not_stop_bundle(self):
+    def test_adapter_signature_changes_with_large_image_strategy(self):
+        first = self.ocr._adapter_signature(
+            {
+                "provider": "rapidocr",
+                "large_image_strategy": {"enabled": True, "max_tiles": 6},
+            }
+        )
+        second = self.ocr._adapter_signature(
+            {
+                "provider": "rapidocr",
+                "large_image_strategy": {"enabled": True, "max_tiles": 4},
+            }
+        )
+
+        self.assertNotEqual(first, second)
+
+    def test_adapter_signature_changes_with_device(self):
+        cpu = self.ocr._adapter_signature(
+            {"provider": "rapidocr", "device": "cpu"}
+        )
+        cuda = self.ocr._adapter_signature(
+            {"provider": "rapidocr", "device": "cuda", "device_id": 0}
+        )
+
+        self.assertNotEqual(cpu, cuda)
+
+    def test_local_adapter_initialization_failure_is_fatal(self):
         with mock.patch(
             "plugins.ocr._build_ocr_adapter", side_effect=RuntimeError("load failed")
         ):
-            plugin = self.ocr.OCRPlugin({"provider": "rapidocr"}, object())
+            with self.assertRaisesRegex(RuntimeError, "load failed"):
+                self.ocr.OCRPlugin(
+                    {"provider": "rapidocr"}, object()
+                )
 
-        self.assertIsNone(plugin._adapter)
+    def test_mnn_config_is_forwarded_to_local_adapter(self):
+        expected = object()
+        with mock.patch(
+            "plugins.ocr.RapidOCRAdapter", return_value=expected
+        ) as adapter:
+            result = self.ocr._build_ocr_adapter(
+                {
+                    "provider": "rapidocr",
+                    "backend": "mnn",
+                    "fallback_backend": "",
+                    "model_dir": "/models/ocr/ppocrv6-tiny-mnn",
+                    "fallback_model_dir": "/models/ocr/ppocrv6-tiny-ort",
+                    "use_angle_cls": False,
+                    "num_threads": 1,
+                    "max_side_len": 960,
+                    "large_image_strategy": {"enabled": True},
+                }
+            )
+
+        self.assertIs(result, expected)
+        adapter.assert_called_once_with(
+            "/models/ocr/ppocrv6-tiny-mnn",
+            backend="mnn",
+            fallback_backend="",
+            fallback_model_dir="/models/ocr/ppocrv6-tiny-ort",
+            device="cpu",
+            device_id=0,
+            gpu_mem_mb=512,
+            use_angle_cls=False,
+            num_threads=1,
+            max_side_len=960,
+            large_image_strategy={"enabled": True},
+        )
+
+    def test_mnn_session_uses_low_memory_config_and_uint8_pointer(self):
+        import numpy as np
+
+        state = types.SimpleNamespace(config=None, conversion=None)
+
+        class FakeTensor:
+            def getNumpyData(self):
+                return np.array([[[[0.75]]]], dtype=np.float32)
+
+        class FakeInterpreter:
+            def __init__(self, model_path):
+                state.model_path = model_path
+
+            def createSession(self, config):
+                state.config = config
+                return object()
+
+            def getSessionInput(self, _session):
+                return FakeTensor()
+
+            def resizeTensor(self, _tensor, shape):
+                state.shape = shape
+
+            def resizeSession(self, _session):
+                state.resized = True
+
+            def runSession(self, _session):
+                state.ran = True
+
+            def getSessionOutput(self, _session):
+                return FakeTensor()
+
+        class FakeImageProcess:
+            def __init__(self, config):
+                state.image_config = config
+
+            def convert(self, ptr, width, height, stride, destination):
+                state.conversion = (ptr, width, height, stride, destination)
+
+        mnn = types.ModuleType("MNN")
+        mnn.Interpreter = FakeInterpreter
+        mnn.CVImageProcess = FakeImageProcess
+        mnn.CV_ImageFormat_RGB = "RGB"
+        mnn.CV_ImageFormat_BGR = "BGR"
+        mnn.CV_Filter_BILINEAL = "BILINEAR"
+
+        with tempfile.TemporaryDirectory() as model_tmp:
+            model_path = Path(model_tmp) / "det.mnn"
+            model_path.write_bytes(b"model")
+            with mock.patch.dict(sys.modules, {"MNN": mnn}):
+                session = self.ocr_runtime._MNNModelSession(
+                    model_path,
+                    num_threads=1,
+                    mean=(127.5, 127.5, 127.5),
+                    normal=(1 / 127.5, 1 / 127.5, 1 / 127.5),
+                )
+                image = np.arange(18, dtype=np.uint8).reshape(2, 3, 3)
+                output = session.run_uint8(image, (1, 3, 2, 3))
+
+        self.assertEqual(
+            state.config,
+            {
+                "backend": "CPU",
+                "numThread": 1,
+                "precision": "low",
+                "memory": 2,
+                "power": 0,
+            },
+        )
+        self.assertEqual(state.shape, (1, 3, 2, 3))
+        self.assertEqual(state.conversion[:4], (image.ctypes.data, 3, 2, 9))
+        self.assertEqual(output.shape, (1, 1, 1, 1))
+
+    def test_mnn_adapter_requires_no_classifier_model(self):
+        with tempfile.TemporaryDirectory() as model_tmp:
+            root = Path(model_tmp)
+            for filename in ("det.mnn", "rec.mnn", "keys.txt"):
+                (root / filename).write_bytes(b"model")
+
+            with mock.patch("plugins.ocr_runtime._MNNPipeline") as pipeline:
+                adapter = self.ocr_runtime.RapidOCRAdapter(
+                    str(root),
+                    backend="mnn",
+                    use_angle_cls=False,
+                    num_threads=1,
+                )
+
+        pipeline.assert_called_once_with(root, num_threads=1, max_side_len=1600)
+        pipeline.return_value.warm_up.assert_called_once_with()
+        self.assertEqual(adapter._backend_name, "mnn")
+
+    def test_mnn_pipeline_closes_detector_when_recognizer_load_fails(self):
+        det_session = mock.Mock()
+        det_utils = types.ModuleType("rapidocr.ch_ppocr_det.utils")
+        det_utils.DBPostProcess = mock.Mock()
+        rec_utils = types.ModuleType("rapidocr.ch_ppocr_rec.utils")
+        rec_utils.CTCLabelDecode = mock.Mock()
+        image_utils = types.ModuleType("rapidocr.utils.process_img")
+        image_utils.get_rotate_crop_image = mock.Mock()
+        modules = {
+            "rapidocr": types.ModuleType("rapidocr"),
+            "rapidocr.ch_ppocr_det": types.ModuleType("rapidocr.ch_ppocr_det"),
+            "rapidocr.ch_ppocr_det.utils": det_utils,
+            "rapidocr.ch_ppocr_rec": types.ModuleType("rapidocr.ch_ppocr_rec"),
+            "rapidocr.ch_ppocr_rec.utils": rec_utils,
+            "rapidocr.utils": types.ModuleType("rapidocr.utils"),
+            "rapidocr.utils.process_img": image_utils,
+        }
+
+        with mock.patch.dict(sys.modules, modules), mock.patch(
+            "plugins.ocr_runtime._MNNModelSession",
+            side_effect=[det_session, RuntimeError("rec load failed")],
+        ):
+            with self.assertRaisesRegex(RuntimeError, "rec load failed"):
+                self.ocr_runtime._MNNPipeline(
+                    Path("/models/ocr/mnn"),
+                    num_threads=1,
+                    max_side_len=960,
+                )
+
+        det_session.close.assert_called_once_with()
+
+    def test_mnn_recognition_padding_is_neutral_before_normalization(self):
+        import numpy as np
+
+        pipeline = object.__new__(self.ocr_runtime._MNNPipeline)
+        captured = {}
+        pipeline._rec = mock.Mock()
+
+        def run_uint8(image, shape):
+            captured["image"] = image.copy()
+            captured["shape"] = shape
+            return np.zeros((1, 2, 2), dtype=np.float32)
+
+        pipeline._rec.run_uint8.side_effect = run_uint8
+        pipeline._rec_decode = mock.Mock(
+            return_value=([("text", 0.9)], [])
+        )
+        cv2_module = types.ModuleType("cv2")
+        cv2_module.INTER_LINEAR = 1
+        cv2_module.resize = mock.Mock(
+            return_value=np.full((48, 100, 3), 200, dtype=np.uint8)
+        )
+        crop = np.zeros((48, 100, 3), dtype=np.uint8)
+
+        with mock.patch.dict(sys.modules, {"cv2": cv2_module}):
+            result = pipeline._recognize_crop(crop)
+
+        self.assertEqual(result, ("text", 0.9))
+        self.assertEqual(captured["shape"], (1, 3, 48, 320))
+        self.assertTrue(np.all(captured["image"][:, :100] == 200))
+        self.assertTrue(np.all(captured["image"][:, 100:] == 128))
+
+    def test_single_pass_uses_bounded_vips_overview_for_any_source_size(self):
+        adapter = object.__new__(self.ocr_runtime.RapidOCRAdapter)
+        adapter._max_side_len = 960
+        adapter._probe_image_header = mock.Mock(
+            return_value=self.ocr_runtime.ImageHeader("PNG", 12000, 9000)
+        )
+        adapter._infer_image = mock.Mock(
+            return_value=[
+                {"text": "bounded", "bbox": [10, 20, 110, 60], "score": 0.9}
+            ]
+        )
+        overview = types.SimpleNamespace(shape=(720, 960, 3))
+
+        with mock.patch(
+            "plugins.ocr_runtime.decode_vips_overview",
+            return_value=overview,
+        ) as decode:
+            result = adapter._recognize_single_pass(b"compressed-image")
+
+        decode.assert_called_once_with(b"compressed-image", 960)
+        self.assertEqual(result[0]["bbox"], [125, 250, 1375, 750])
 
     def test_rapidocr_output_normalizes_polygon_to_pixel_bbox(self):
         output = types.SimpleNamespace(
@@ -189,10 +454,8 @@ class OCRContractTest(unittest.TestCase):
         captured_config = {}
 
         def create_engine(*, config_path):
-            import yaml
-
             captured_config.update(
-                yaml.safe_load(Path(config_path).read_text(encoding="utf-8"))
+                json.loads(Path(config_path).read_text(encoding="utf-8"))
             )
             return fake_engine
 
@@ -206,19 +469,34 @@ class OCRContractTest(unittest.TestCase):
                 (root / name).write_bytes(b"model")
             default_config = root / "default.yaml"
             default_config.write_text(
-                "Det: {}\nCls: {}\nRec: {}\nGlobal: {}\nEngineConfig: {}\n",
+                json.dumps(
+                    {
+                        "Det": {},
+                        "Cls": {},
+                        "Rec": {},
+                        "Global": {},
+                        "EngineConfig": {},
+                    }
+                ),
                 encoding="utf-8",
             )
             rapidocr_main_module.DEFAULT_CFG_PATH = str(default_config)
+            yaml_module = types.ModuleType("yaml")
+            yaml_module.safe_load = json.load
+            yaml_module.safe_dump = lambda data, stream, **_kwargs: json.dump(
+                data, stream
+            )
             with mock.patch.dict(
                 sys.modules,
                 {
                     "rapidocr": rapidocr_module,
                     "rapidocr.main": rapidocr_main_module,
+                    "yaml": yaml_module,
                 },
             ):
                 self.ocr.RapidOCRAdapter(
                     model_dir,
+                    device="cpu",
                     use_angle_cls=True,
                     num_threads=2,
                     max_side_len=1600,
@@ -241,153 +519,302 @@ class OCRContractTest(unittest.TestCase):
         self.assertFalse(engine_config["use_cuda"])
         self.assertEqual(captured_config["Global"]["max_side_len"], 1600)
 
-    def test_rapidocr_adapter_decodes_compressed_image_before_inference(self):
+    def test_rapidocr_adapter_configures_cuda_execution_provider(self):
+        captured_config = {}
+
+        def create_engine(*, config_path):
+            captured_config.update(
+                json.loads(Path(config_path).read_text(encoding="utf-8"))
+            )
+            return mock.Mock()
+
+        rapidocr_module = types.ModuleType("rapidocr")
+        rapidocr_module.RapidOCR = mock.Mock(side_effect=create_engine)
+        rapidocr_main_module = types.ModuleType("rapidocr.main")
+        onnxruntime_module = types.ModuleType("onnxruntime")
+        onnxruntime_module.get_available_providers = mock.Mock(
+            return_value=["CUDAExecutionProvider", "CPUExecutionProvider"]
+        )
+
+        with tempfile.TemporaryDirectory() as model_dir:
+            root = Path(model_dir)
+            for name in ("det.onnx", "rec.onnx", "cls.onnx", "keys.txt"):
+                (root / name).write_bytes(b"model")
+            default_config = root / "default.yaml"
+            default_config.write_text(
+                json.dumps(
+                    {
+                        "Det": {}, "Cls": {}, "Rec": {}, "Global": {},
+                        "EngineConfig": {},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            rapidocr_main_module.DEFAULT_CFG_PATH = str(default_config)
+            yaml_module = types.ModuleType("yaml")
+            yaml_module.safe_load = json.load
+            yaml_module.safe_dump = lambda data, stream, **_kwargs: json.dump(
+                data, stream
+            )
+            with mock.patch.dict(
+                sys.modules,
+                {
+                    "rapidocr": rapidocr_module,
+                    "rapidocr.main": rapidocr_main_module,
+                    "onnxruntime": onnxruntime_module,
+                    "yaml": yaml_module,
+                },
+            ):
+                self.ocr.RapidOCRAdapter(
+                    model_dir,
+                    device="cuda",
+                    device_id=0,
+                    gpu_mem_mb=512,
+                    num_threads=1,
+                )
+
+        engine_config = captured_config["EngineConfig"]["onnxruntime"]
+        self.assertTrue(engine_config["use_cuda"])
+        self.assertEqual(engine_config["intra_op_num_threads"], 1)
+        self.assertEqual(
+            engine_config["cuda_ep_cfg"],
+            {"device_id": 0, "gpu_mem_limit": 512 * 1024 * 1024},
+        )
+
+    def test_cuda_adapter_rejects_missing_cuda_execution_provider(self):
+        onnxruntime_module = types.ModuleType("onnxruntime")
+        onnxruntime_module.get_available_providers = mock.Mock(
+            return_value=["CPUExecutionProvider"]
+        )
+
+        with tempfile.TemporaryDirectory() as model_dir:
+            root = Path(model_dir)
+            for name in ("det.onnx", "rec.onnx", "cls.onnx", "keys.txt"):
+                (root / name).write_bytes(b"model")
+            with mock.patch.dict(
+                sys.modules, {"onnxruntime": onnxruntime_module}
+            ):
+                with self.assertRaisesRegex(
+                    RuntimeError, "CUDAExecutionProvider"
+                ):
+                    self.ocr.RapidOCRAdapter(model_dir, device="cuda")
+
+    def test_large_jpeg_delegates_to_strategy(self):
+        adapter = object.__new__(self.ocr.RapidOCRAdapter)
+        adapter._large_image_strategy = mock.Mock()
+        adapter._large_image_strategy.should_handle.return_value = True
+        adapter._large_image_strategy.recognize.return_value = [
+            {"text": "tile"}
+        ]
+        adapter._infer_image = mock.Mock()
+        image_bytes = self._jpeg(4000, 3000)
+
+        result = adapter.recognize(image_bytes)
+
+        self.assertEqual(result, [{"text": "tile"}])
+        adapter._large_image_strategy.should_handle.assert_called_once_with(
+            (4000, 3000)
+        )
+        adapter._large_image_strategy.recognize.assert_called_once_with(
+            image_bytes, adapter._infer_image
+        )
+
+    def test_small_image_keeps_existing_single_pass_path(self):
+        adapter = object.__new__(self.ocr.RapidOCRAdapter)
+        adapter._large_image_strategy = mock.Mock()
+        adapter._large_image_strategy.should_handle.return_value = False
+        adapter._recognize_single_pass = mock.Mock(
+            return_value=[
+                {"text": "small", "bbox": [10, 20, 100, 50]}
+            ]
+        )
+        image_bytes = self._jpeg(800, 600)
+
+        result = adapter.recognize(image_bytes)
+
+        self.assertEqual(result[0]["bbox"], [10, 20, 100, 50])
+        adapter._recognize_single_pass.assert_called_once_with(image_bytes)
+        adapter._large_image_strategy.recognize.assert_not_called()
+
+    def test_strategy_uses_same_locked_engine_callback(self):
         adapter = object.__new__(self.ocr.RapidOCRAdapter)
         adapter._use_angle_cls = True
-        adapter._max_side_len = 1600
-        adapter._inference_lock = threading.Lock()
+        adapter._inference_lock = mock.MagicMock()
         adapter._engine = mock.Mock(
             return_value=types.SimpleNamespace(boxes=[], txts=(), scores=())
         )
-        cv2_module = types.ModuleType("cv2")
-        cv2_module.IMREAD_COLOR = 1
-        cv2_module.IMREAD_REDUCED_COLOR_2 = 2
-        cv2_module.IMREAD_REDUCED_COLOR_4 = 4
-        cv2_module.IMREAD_REDUCED_COLOR_8 = 8
-        cv2_module.INTER_AREA = 3
-        decoded_image = types.SimpleNamespace(shape=(100, 200, 3))
-        cv2_module.imdecode = mock.Mock(return_value=decoded_image)
-        cv2_module.resize = mock.Mock()
-        numpy_module = types.ModuleType("numpy")
-        numpy_module.uint8 = "uint8"
-        numpy_module.frombuffer = mock.Mock(return_value="encoded-buffer")
+        image = object()
 
-        with mock.patch.dict(
-            sys.modules, {"cv2": cv2_module, "numpy": numpy_module}
-        ):
+        result = adapter._infer_image(image)
+
+        self.assertEqual(result, [])
+        adapter._inference_lock.__enter__.assert_called_once_with()
+        adapter._inference_lock.__exit__.assert_called_once()
+        adapter._engine.assert_called_once_with(
+            image, use_det=True, use_cls=True, use_rec=True
+        )
+
+    def test_shared_adapter_serializes_complete_large_image_requests(self):
+        first_entered = threading.Event()
+        both_entered = threading.Event()
+        release = threading.Event()
+        state_lock = threading.Lock()
+        state = {"active": 0, "max_active": 0}
+
+        class TrackingStrategy:
+            @staticmethod
+            def should_handle(_source_size):
+                return True
+
+            @staticmethod
+            def recognize(_image_bytes, _infer_image):
+                with state_lock:
+                    state["active"] += 1
+                    state["max_active"] = max(
+                        state["max_active"], state["active"]
+                    )
+                    if state["active"] == 1:
+                        first_entered.set()
+                    if state["active"] == 2:
+                        both_entered.set()
+                release.wait(timeout=2)
+                with state_lock:
+                    state["active"] -= 1
+                return []
+
+        adapter = object.__new__(self.ocr.RapidOCRAdapter)
+        adapter._request_lock = threading.Lock()
+        adapter._large_image_strategy = TrackingStrategy()
+        adapter._infer_image = mock.Mock()
+        image_bytes = self._jpeg(4000, 3000)
+        first = threading.Thread(target=adapter.recognize, args=(image_bytes,))
+        second = threading.Thread(target=adapter.recognize, args=(image_bytes,))
+
+        first.start()
+        self.assertTrue(first_entered.wait(timeout=1))
+        second.start()
+        both_entered.wait(timeout=0.1)
+        release.set()
+        first.join(timeout=1)
+        second.join(timeout=1)
+
+        self.assertFalse(first.is_alive())
+        self.assertFalse(second.is_alive())
+        self.assertEqual(state["max_active"], 1)
+
+    def _single_pass_adapter(self, source_size, output, *, max_side=1600):
+        adapter = object.__new__(self.ocr.RapidOCRAdapter)
+        adapter._large_image_strategy = None
+        adapter._use_angle_cls = False
+        adapter._max_side_len = max_side
+        adapter._probe_image_header = mock.Mock(
+            return_value=self.ocr_runtime.ImageHeader(
+                "JPEG", source_size[0], source_size[1]
+            )
+        )
+        adapter._inference_lock = threading.Lock()
+        adapter._engine = mock.Mock(return_value=output)
+        return adapter
+
+    def test_rapidocr_adapter_uses_bounded_overview_before_inference(self):
+        decoded_image = types.SimpleNamespace(shape=(100, 200, 3))
+        adapter = self._single_pass_adapter(
+            (200, 100),
+            types.SimpleNamespace(boxes=[], txts=(), scores=()),
+        )
+
+        with mock.patch(
+            "plugins.ocr_runtime.decode_vips_overview",
+            return_value=decoded_image,
+        ) as decode:
             result = adapter.recognize(b"jpeg-bytes")
 
-        numpy_module.frombuffer.assert_called_once_with(b"jpeg-bytes", dtype="uint8")
-        cv2_module.imdecode.assert_called_once_with("encoded-buffer", 1)
+        decode.assert_called_once_with(b"jpeg-bytes", 1600)
         adapter._engine.assert_called_once_with(
-            decoded_image, use_det=True, use_cls=True, use_rec=True
+            decoded_image, use_det=True, use_cls=False, use_rec=True
         )
         self.assertEqual(result, [])
 
-    def test_large_jpeg_uses_reduced_decode_and_restores_source_bbox(self):
-        adapter = object.__new__(self.ocr.RapidOCRAdapter)
-        adapter._use_angle_cls = False
-        adapter._max_side_len = 1600
-        adapter._inference_lock = threading.Lock()
-        adapter._engine = mock.Mock(
-            return_value=types.SimpleNamespace(
+    def test_large_image_overview_restores_source_bbox(self):
+        adapter = self._single_pass_adapter(
+            (4000, 3000),
+            types.SimpleNamespace(
                 boxes=[[[10, 20], [100, 20], [100, 50], [10, 50]]],
                 txts=("large",),
                 scores=(0.8,),
-            )
+            ),
         )
-        cv2_module = types.ModuleType("cv2")
-        cv2_module.IMREAD_COLOR = 1
-        cv2_module.IMREAD_REDUCED_COLOR_2 = 2
-        cv2_module.IMREAD_REDUCED_COLOR_4 = 4
-        cv2_module.IMREAD_REDUCED_COLOR_8 = 8
-        cv2_module.INTER_AREA = 3
-        reduced_image = types.SimpleNamespace(shape=(750, 1000, 3))
-        cv2_module.imdecode = mock.Mock(return_value=reduced_image)
-        cv2_module.resize = mock.Mock()
-        numpy_module = types.ModuleType("numpy")
-        numpy_module.uint8 = "uint8"
-        numpy_module.frombuffer = mock.Mock(return_value="encoded-buffer")
-        jpeg = (
-            b"\xff\xd8\xff\xc0\x00\x11\x08"
-            + (3000).to_bytes(2, "big")
-            + (4000).to_bytes(2, "big")
-            + b"\x03\x01\x11\x00\x02\x11\x00\x03\x11\x00\xff\xd9"
-        )
+        overview = types.SimpleNamespace(shape=(750, 1000, 3))
 
-        with mock.patch.dict(
-            sys.modules, {"cv2": cv2_module, "numpy": numpy_module}
+        with mock.patch(
+            "plugins.ocr_runtime.decode_vips_overview", return_value=overview
         ):
-            result = adapter.recognize(jpeg)
+            result = adapter.recognize(b"image-bytes")
 
-        cv2_module.imdecode.assert_called_once_with("encoded-buffer", 4)
-        cv2_module.resize.assert_not_called()
         self.assertEqual(result[0]["bbox"], [40, 80, 400, 200])
 
-    def test_small_jpeg_keeps_full_decode_resolution(self):
-        adapter = object.__new__(self.ocr.RapidOCRAdapter)
-        adapter._use_angle_cls = False
-        adapter._max_side_len = 1600
-        adapter._inference_lock = threading.Lock()
-        adapter._engine = mock.Mock(
-            return_value=types.SimpleNamespace(
+    def test_single_pass_scales_float_polygon_before_rounding(self):
+        adapter = self._single_pass_adapter(
+            (4000, 3000),
+            types.SimpleNamespace(
+                boxes=[
+                    [
+                        [10.8, 20.8],
+                        [100.2, 20.8],
+                        [100.2, 50.2],
+                        [10.8, 50.2],
+                    ]
+                ],
+                txts=("precise",),
+                scores=(0.8,),
+            ),
+        )
+        overview = types.SimpleNamespace(shape=(750, 1000, 3))
+
+        with mock.patch(
+            "plugins.ocr_runtime.decode_vips_overview", return_value=overview
+        ):
+            result = adapter.recognize(b"image-bytes")
+
+        self.assertEqual(result[0]["bbox"], [43, 83, 401, 201])
+
+    def test_small_image_keeps_source_coordinates(self):
+        adapter = self._single_pass_adapter(
+            (800, 600),
+            types.SimpleNamespace(
                 boxes=[[[10, 20], [100, 20], [100, 50], [10, 50]]],
                 txts=("small",),
                 scores=(0.8,),
-            )
+            ),
         )
-        cv2_module = types.ModuleType("cv2")
-        cv2_module.IMREAD_COLOR = 1
-        cv2_module.IMREAD_REDUCED_COLOR_2 = 2
-        cv2_module.IMREAD_REDUCED_COLOR_4 = 4
-        cv2_module.IMREAD_REDUCED_COLOR_8 = 8
-        cv2_module.INTER_AREA = 3
-        full_image = types.SimpleNamespace(shape=(600, 800, 3))
-        cv2_module.imdecode = mock.Mock(return_value=full_image)
-        cv2_module.resize = mock.Mock()
-        numpy_module = types.ModuleType("numpy")
-        numpy_module.uint8 = "uint8"
-        numpy_module.frombuffer = mock.Mock(return_value="encoded-buffer")
-        jpeg = (
-            b"\xff\xd8\xff\xc0\x00\x11\x08"
-            + (600).to_bytes(2, "big")
-            + (800).to_bytes(2, "big")
-            + b"\x03\x01\x11\x00\x02\x11\x00\x03\x11\x00\xff\xd9"
-        )
+        overview = types.SimpleNamespace(shape=(600, 800, 3))
 
-        with mock.patch.dict(
-            sys.modules, {"cv2": cv2_module, "numpy": numpy_module}
+        with mock.patch(
+            "plugins.ocr_runtime.decode_vips_overview", return_value=overview
         ):
-            result = adapter.recognize(jpeg)
+            result = adapter.recognize(b"image-bytes")
 
-        cv2_module.imdecode.assert_called_once_with("encoded-buffer", 1)
-        cv2_module.resize.assert_not_called()
         self.assertEqual(result[0]["bbox"], [10, 20, 100, 50])
 
-    def test_non_jpeg_large_image_is_resized_and_bbox_is_restored(self):
-        adapter = object.__new__(self.ocr.RapidOCRAdapter)
-        adapter._use_angle_cls = True
-        adapter._max_side_len = 1600
-        adapter._inference_lock = threading.Lock()
-        adapter._engine = mock.Mock(
-            return_value=types.SimpleNamespace(
+    def test_non_jpeg_overview_restores_source_bbox(self):
+        adapter = self._single_pass_adapter(
+            (4000, 3000),
+            types.SimpleNamespace(
                 boxes=[[[10, 10], [100, 10], [100, 40], [10, 40]]],
                 txts=("png",),
                 scores=(0.7,),
-            )
+            ),
         )
-        cv2_module = types.ModuleType("cv2")
-        cv2_module.IMREAD_COLOR = 1
-        cv2_module.IMREAD_REDUCED_COLOR_2 = 2
-        cv2_module.IMREAD_REDUCED_COLOR_4 = 4
-        cv2_module.IMREAD_REDUCED_COLOR_8 = 8
-        cv2_module.INTER_AREA = 3
-        full_image = types.SimpleNamespace(shape=(3000, 4000, 3))
-        resized_image = types.SimpleNamespace(shape=(1200, 1600, 3))
-        cv2_module.imdecode = mock.Mock(return_value=full_image)
-        cv2_module.resize = mock.Mock(return_value=resized_image)
-        numpy_module = types.ModuleType("numpy")
-        numpy_module.uint8 = "uint8"
-        numpy_module.frombuffer = mock.Mock(return_value="encoded-buffer")
+        adapter._probe_image_header.return_value = self.ocr_runtime.ImageHeader(
+            "PNG", 4000, 3000
+        )
+        overview = types.SimpleNamespace(shape=(1200, 1600, 3))
 
-        with mock.patch.dict(
-            sys.modules, {"cv2": cv2_module, "numpy": numpy_module}
+        with mock.patch(
+            "plugins.ocr_runtime.decode_vips_overview", return_value=overview
         ):
             result = adapter.recognize(b"png-bytes")
 
-        cv2_module.resize.assert_called_once_with(
-            full_image, (1600, 1200), interpolation=3
-        )
         self.assertEqual(result[0]["bbox"], [25, 25, 250, 100])
 
     def test_frame_queue_keeps_only_latest_image(self):
@@ -426,7 +853,11 @@ class OCRContractTest(unittest.TestCase):
 
         self.assertEqual(build.call_count, 1)
         node_type.assert_called_once_with(
-            "/camera", shared_adapter, "en", node_suffix="case_1"
+            "/camera",
+            shared_adapter,
+            "en",
+            node_suffix="case_1",
+            min_interval=0.0,
         )
 
     def test_empty_shared_config_reuses_adapter(self):
@@ -443,20 +874,204 @@ class OCRContractTest(unittest.TestCase):
         self.assertIs(plugin._adapter, shared_adapter)
         self.assertTrue(result["reused"])
 
-    def test_removing_node_stops_removes_and_destroys_it(self):
-        plugin = object.__new__(self.ocr.OCRPlugin)
-        node = mock.Mock()
-        node.worker_alive = False
-        plugin._nodes = {"case-1": node}
-        plugin._executor = mock.Mock()
-        plugin._retired_nodes = []
+    def test_repeated_start_stop_reuses_one_ros_node(self):
+        executor = mock.Mock()
+        node = mock.Mock(_input_topic="/camera", state="idle")
+        node.start.return_value = {"state": "running"}
+        node.stop.return_value = {"state": "idle"}
 
-        plugin._remove_node("case-1")
+        with mock.patch("plugins.ocr._build_ocr_adapter", return_value=object()):
+            plugin = self.ocr.OCRPlugin({"provider": "rapidocr"}, executor)
+        with mock.patch.object(self.ocr, "_OCRNode", return_value=node) as node_type:
+            for _ in range(250):
+                plugin.dispatch(
+                    "ocr",
+                    {
+                        "action": "start",
+                        "input_topic": "/camera",
+                    },
+                )
+                plugin.dispatch("ocr", {"action": "stop"})
+
+        node_type.assert_called_once()
+        executor.add_node.assert_called_once_with(node)
+        executor.remove_node.assert_not_called()
+        node.destroy_node.assert_not_called()
+        self.assertIs(plugin._nodes["/camera"], node)
+        self.assertEqual(node.start.call_count, 250)
+        self.assertEqual(node.stop.call_count, 250)
+
+    def test_concurrent_starts_create_one_ocr_node(self):
+        executor = mock.Mock()
+        first_constructor_entered = threading.Event()
+        release_first_constructor = threading.Event()
+
+        def build_node(*_args, **_kwargs):
+            first_constructor_entered.set()
+            release_first_constructor.wait(timeout=1)
+            node = mock.Mock(_input_topic="/camera", state="idle")
+            node.start.return_value = {"state": "running"}
+            return node
+
+        with mock.patch("plugins.ocr._build_ocr_adapter", return_value=object()):
+            plugin = self.ocr.OCRPlugin({"provider": "rapidocr"}, executor)
+
+        errors = []
+
+        def start():
+            try:
+                plugin.dispatch(
+                    "ocr",
+                    {
+                        "action": "start",
+                        "input_topic": "/camera",
+                    },
+                )
+            except Exception as exc:
+                errors.append(exc)
+
+        with mock.patch.object(self.ocr, "_OCRNode", side_effect=build_node) as node_type:
+            first = threading.Thread(target=start)
+            second = threading.Thread(target=start)
+            first.start()
+            self.assertTrue(first_constructor_entered.wait(timeout=1))
+            second.start()
+            time.sleep(0.05)
+            release_first_constructor.set()
+            first.join(timeout=1)
+            second.join(timeout=1)
+
+        self.assertEqual(errors, [])
+        self.assertFalse(first.is_alive())
+        self.assertFalse(second.is_alive())
+        node_type.assert_called_once()
+        executor.add_node.assert_called_once()
+
+    def test_stale_worker_cannot_publish_after_restart(self):
+        old_inference_started = threading.Event()
+        release_old_inference = threading.Event()
+
+        def recognize(_adapter, image_bytes, _language, _timestamp):
+            if image_bytes == b"old":
+                old_inference_started.set()
+                release_old_inference.wait(timeout=1)
+            return {"text": image_bytes.decode(), "items": []}
+
+        node = self.ocr._OCRNode("/camera", object())
+        with mock.patch("plugins.ocr.recognize_to_payload", side_effect=recognize):
+            node.start()
+            first_stop_event = node._stop_event
+            node._image_cb(types.SimpleNamespace(data=b"old", format="jpeg"))
+            self.assertTrue(old_inference_started.wait(timeout=1))
+
+            old_worker = node._worker_thread
+            with mock.patch.object(old_worker, "join", return_value=None):
+                node.stop()
+            node.start()
+            second_stop_event = node._stop_event
+            release_old_inference.set()
+            time.sleep(0.05)
+
+            node._image_cb(types.SimpleNamespace(data=b"new", format="jpeg"))
+            deadline = time.time() + 1
+            while node._pub.publish.call_count < 1 and time.time() < deadline:
+                time.sleep(0.01)
+            node.stop()
+
+        self.assertIsNot(first_stop_event, second_stop_event)
+        published = [json.loads(call.args[0].data)["text"] for call in node._pub.publish.call_args_list]
+        self.assertEqual(published, ["new"])
+
+    def test_topic_change_retires_node_without_destroying_it(self):
+        executor = mock.Mock()
+        old_node = mock.Mock(_input_topic="/camera/old")
+        new_node = mock.Mock(_input_topic="/camera/new")
+        old_node.start.return_value = {"state": "running"}
+        old_node.stop.return_value = {"state": "idle"}
+        new_node.start.return_value = {"state": "running"}
+
+        with mock.patch("plugins.ocr._build_ocr_adapter", return_value=object()):
+            plugin = self.ocr.OCRPlugin({"provider": "rapidocr"}, executor)
+        with mock.patch.object(
+            self.ocr, "_OCRNode", side_effect=[old_node, new_node]
+        ):
+            plugin.dispatch(
+                "ocr",
+                {
+                    "action": "start",
+                    "instance_id": "case-1",
+                    "input_topic": "/camera/old",
+                },
+            )
+            plugin.dispatch(
+                "ocr",
+                {
+                    "action": "start",
+                    "instance_id": "case-1",
+                    "input_topic": "/camera/new",
+                },
+            )
+
+        old_node.stop.assert_called_once_with()
+        executor.remove_node.assert_called_once_with(old_node)
+        old_node.destroy_node.assert_not_called()
+        self.assertEqual(plugin._retired_nodes, [old_node])
+        self.assertIs(plugin._nodes["case-1"], new_node)
+
+    def test_instance_config_updates_existing_node_without_removing_it(self):
+        executor = mock.Mock()
+        shared_adapter = object()
+        node = mock.Mock(_input_topic="/camera")
+        node.start.return_value = {"state": "running"}
+        node.stop.return_value = {"state": "idle"}
+
+        with mock.patch(
+            "plugins.ocr._build_ocr_adapter", return_value=shared_adapter
+        ):
+            plugin = self.ocr.OCRPlugin(
+                {"provider": "rapidocr", "language": "zh"}, executor
+            )
+        with mock.patch.object(self.ocr, "_OCRNode", return_value=node):
+            plugin.dispatch(
+                "ocr",
+                {
+                    "action": "start",
+                    "instance_id": "case-1",
+                    "input_topic": "/camera",
+                },
+            )
+            plugin.dispatch(
+                "ocr",
+                {"action": "config", "instance_id": "case-1", "language": "en"},
+            )
 
         node.stop.assert_called_once_with()
-        plugin._executor.remove_node.assert_called_once_with(node)
-        node.destroy_node.assert_called_once_with()
-        self.assertNotIn("case-1", plugin._nodes)
+        executor.remove_node.assert_not_called()
+        node.destroy_node.assert_not_called()
+        self.assertIs(node._adapter, shared_adapter)
+        self.assertEqual(node._language, "en")
+
+    def test_nodes_are_destroyed_only_during_final_shutdown(self):
+        plugin = object.__new__(self.ocr.OCRPlugin)
+        plugin._lifecycle_lock = threading.RLock()
+        active = mock.Mock()
+        retired = mock.Mock()
+        plugin._nodes = {"case-1": active}
+        plugin._retired_nodes = [retired, active]
+
+        plugin.prepare_shutdown()
+
+        active.stop.assert_called_once_with()
+        retired.stop.assert_called_once_with()
+        active.destroy_node.assert_not_called()
+        retired.destroy_node.assert_not_called()
+
+        plugin.destroy_nodes()
+
+        active.destroy_node.assert_called_once_with()
+        retired.destroy_node.assert_called_once_with()
+        self.assertEqual(plugin._nodes, {})
+        self.assertEqual(plugin._retired_nodes, [])
 
 
 if __name__ == "__main__":

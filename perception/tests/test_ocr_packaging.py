@@ -16,16 +16,31 @@ class OCRPackagingTest(unittest.TestCase):
             'plugins_cfg.get("ocr", {}).get("enabled", False)', source
         )
 
+    def test_dynamic_ocr_memory_rejection_module_is_removed(self):
+        self.assertFalse(
+            (REPO_ROOT / "perception" / "plugins" / "ocr_memory_guard.py").exists()
+        )
+
     def test_default_config_is_bounded_for_ocr_leaderboard(self):
         config = (REPO_ROOT / "perception" / "config.yaml").read_text(
             encoding="utf-8"
         )
-
         self.assertIn("  asr:\n    enabled: false\n    mode: offline", config)
         self.assertIn("  ocr:\n    enabled: true\n    provider: rapidocr", config)
-        self.assertIn("model_dir: /models/ocr/ppocrv6-small-int8", config)
-        self.assertIn("    max_side_len: 1600", config)
+        self.assertIn("    backend: mnn", config)
+        self.assertIn("model_dir: /models/ocr/ppocrv6-tiny-mnn", config)
+        self.assertIn("    max_side_len: 960", config)
+        self.assertNotIn("    max_input_mb:", config)
+        self.assertNotIn("    max_decode_mb:", config)
+        self.assertNotIn("    memory_guard:", config)
         self.assertIn("    num_threads: 1", config)
+        self.assertRegex(
+            config,
+            r"large_image_strategy:\n"
+            r"(?:      #.*\n)*"
+            r"      enabled: true",
+        )
+        self.assertIn("      max_tiles: 12", config)
         self.assertIn('    url: ""', config)
         self.assertIn('    key: ""', config)
         self.assertIn('    model: ""', config)
@@ -36,21 +51,47 @@ class OCRPackagingTest(unittest.TestCase):
         )
 
         self.assertIn("rapidocr==3.9.1", dockerfile)
+        self.assertIn('"MNN==3.6.0"', dockerfile)
+        self.assertIn('"pyvips==3.1.0"', dockerfile)
+        self.assertIn("libvips42", dockerfile)
+        self.assertIn("Ubuntu 22.04 ships libffi.so.8", dockerfile)
+        self.assertIn('"onnxruntime==1.23.0"', dockerfile)
+        self.assertNotIn("nvidia.box.com", dockerfile)
+        self.assertNotIn("onnxruntime_gpu-1.17.0", dockerfile)
+        self.assertNotIn("ORT_WHEEL_URL", dockerfile)
+        self.assertIn(
+            "assert 'CUDAExecutionProvider' not in providers", dockerfile
+        )
         self.assertIn("--no-deps", dockerfile)
         self.assertIn("onnxruntime", dockerfile)
         self.assertIn("rapidocr.__file__", dockerfile)
         self.assertIn("-name '*.onnx' -delete", dockerfile)
         self.assertIn("ocr_model_downloader.py", dockerfile)
         self.assertIn(
-            "http://172.28.4.81:34567/lizhuoju/embodied-ai/ppocrv6-small-int8",
+            "http://172.28.4.81:34567/zengzhitao/embodied-ai/ppocrv6-tiny-mnn",
             dockerfile,
         )
-        self.assertIn(
-            "http://172.28.4.81:34567/lizhuoju/embodied-ai/ocr/ppocrv6-small-int8",
-            dockerfile,
-        )
-        self.assertIn("/models/ocr/ppocrv6-small-int8", dockerfile)
+        self.assertIn("--filenames det.mnn rec.mnn keys.txt", dockerfile)
+        self.assertIn("/models/ocr/ppocrv6-tiny-mnn", dockerfile)
         self.assertNotIn("COPY perception/models", dockerfile)
+
+        service = (REPO_ROOT / "perception" / "deploy" / "service.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("runtime: nvidia", service)
+
+    def test_jetson_image_caps_cpu_threads_and_allocator_arenas(self):
+        dockerfile = (REPO_ROOT / "perception" / "Dockerfile.jetson").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("OMP_NUM_THREADS=1", dockerfile)
+        self.assertIn("OPENBLAS_NUM_THREADS=1", dockerfile)
+        self.assertIn("MKL_NUM_THREADS=1", dockerfile)
+        self.assertIn("NUMEXPR_NUM_THREADS=1", dockerfile)
+        self.assertIn("OPENCV_FOR_THREADS_NUM=1", dockerfile)
+        self.assertIn("VIPS_CONCURRENCY=1", dockerfile)
+        self.assertIn("MALLOC_ARENA_MAX=2", dockerfile)
 
     def test_jetson_image_loads_large_message_fastdds_profile(self):
         dockerfile = (REPO_ROOT / "perception" / "Dockerfile.jetson").read_text(
