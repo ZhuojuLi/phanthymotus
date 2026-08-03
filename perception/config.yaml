@@ -45,3 +45,8 @@ plugins:
     confidence: 0.3
     classes: []         # empty = default broad set
     fps: 5
+
+  obstacle:
+    enabled: true
+    model_dir: /models/obstacle   # ONNX cache; auto-downloaded from juicefs mirror
+    gpu: false                    # CPU keeps GPU <10% (Jetson constraint)

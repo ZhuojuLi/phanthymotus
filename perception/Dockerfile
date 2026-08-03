@@ -26,6 +26,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends espeak-ng && \
     rm -rf /var/lib/apt/lists/*
 RUN pip3 install --no-cache-dir -i ${PYPI_MIRROR} \
     phonemizer
+RUN pip3 install --no-cache-dir -i ${PYPI_MIRROR} \
+    onnxruntime opencv-python-headless
 
 # Override base image RMW (some ros-base tags ship cyclonedds by default)
 ENV RMW_IMPLEMENTATION=rmw_fastrtps_cpp
