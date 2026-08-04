@@ -197,6 +197,19 @@ class ObstaclePerceptionPlugin:
         self._load_error: Optional[str] = None
         self._infer_count = 0
         self._fail_count = 0
+        # Fail fast at startup if the models baked into the image are missing,
+        # rather than discovering it on the first estimate() call.
+        try:
+            for scene, fname in _MODEL_FILES.items():
+                for f in (fname, fname + ".data"):
+                    p = os.path.join(self._model_dir, f)
+                    if not os.path.isfile(p):
+                        raise FileNotFoundError(p)
+            log.info(f"[obstacle] plugin init: model_dir={self._model_dir} (models present)")
+        except Exception as e:
+            self._load_error = str(e)
+            log.warning(f"[obstacle] plugin init: models not pre-baked ({e}); "
+                        f"will lazy-download from {_JUICEFS_BASE} on first estimate")
 
     def _ensure(self) -> _OnnxDepth:
         if self._estimator is None:

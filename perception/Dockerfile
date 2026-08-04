@@ -29,6 +29,16 @@ RUN pip3 install --no-cache-dir -i ${PYPI_MIRROR} \
 RUN pip3 install --no-cache-dir -i ${PYPI_MIRROR} \
     onnxruntime opencv-python-headless
 
+# Obstacle models are external artifacts baked into the image at build time
+# (downloaded from the juicefs mirror, sha256+size verified) so the runtime
+# container never needs network access for them.
+COPY models/obstacle-artifacts.json /tmp/obstacle-artifacts.json
+COPY utils/obstacle_model_downloader.py /tmp/obstacle_model_downloader.py
+RUN python3 /tmp/obstacle_model_downloader.py \
+      --manifest /tmp/obstacle-artifacts.json \
+      --timeout 120 \
+      --retries 3
+
 # Override base image RMW (some ros-base tags ship cyclonedds by default)
 ENV RMW_IMPLEMENTATION=rmw_fastrtps_cpp
 ENV ROS_DOMAIN_ID=42

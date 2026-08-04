@@ -25,7 +25,7 @@ plugins:
     speed: 1.0
 
   htmsg:
-    enabled: true
+    enabled: false
     namespace: ""       # auto-detect from hostname if empty
     keyframe:
       dist_thresh: 1.0    # meters — insert keyframe when moved this far
@@ -39,7 +39,7 @@ plugins:
       max_nodes: 500
 
   vop:
-    enabled: true
+    enabled: false
     namespace: ""       # auto-detect from hostname if empty
     model: "yolov8s-worldv2"
     confidence: 0.3
