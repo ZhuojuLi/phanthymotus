@@ -49,7 +49,7 @@ _JUICEFS_BASE = os.environ.get(
     "http://172.28.4.81:34567/lizhuoju/embodied-ai/obstacle-distance/dav2-metric-small-onnx")
 _MODEL_FILES = {
     "indoor": "dav2_indoor_small_ft.onnx",     # fine-tuned on NYU ROI-P1 labels (val F1@1m 0.80)
-    "outdoor": "dav2_outdoor_small_ft.onnx",   # fine-tuned on vkitti2 bumper-distance labels (val F1@1m 0.98)
+    "outdoor": "dav2_outdoor_small_ft2.onnx",  # fine-tuned on vkitti2 w/ plugin ROI-P1 statistic (val F1@1m 0.74)
 }
 # weights live in a sidecar file (external-data ONNX) — downloaded alongside
 _EXTRA_FILES = [f + ".data" for f in _MODEL_FILES.values()]
