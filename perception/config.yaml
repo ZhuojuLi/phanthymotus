@@ -48,5 +48,9 @@ plugins:
 
   obstacle:
     enabled: true
-    model_dir: /models/obstacle   # ONNX cache; auto-downloaded from juicefs mirror
+    provider: local
+    url: ""
+    key: ""
+    model: ""
+    model_dir: /models/obstacle   # ONNX cache; baked into the image at build time
     gpu: false                    # CPU keeps GPU <10% (Jetson constraint)

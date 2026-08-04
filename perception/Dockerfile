@@ -48,6 +48,7 @@ COPY main.py    /work/main.py
 COPY plugins/   /work/plugins/
 COPY utils/     /work/utils/
 COPY config.yaml /work/config.yaml
+COPY config/fastdds_large_message.xml /opt/phanthy-motus/config/fastdds_large_message.xml
 COPY deploy/     /deploy/
 
 EXPOSE 15720
