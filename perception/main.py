@@ -438,6 +438,13 @@ def main():
 
     try:
         server.serve_forever()
+    except Exception:
+        # Never let the process die with a bare traceback on stderr only;
+        # the leaderboard harness only surfaces harness-side logs. Exit 0
+        # would be wrong too (ready probe must fail loudly), so re-exit 1
+        # but leave a full traceback in the container log first.
+        log.error("MCP server crashed", exc_info=True)
+        raise
     finally:
         executor.shutdown()
         rclpy.shutdown()
