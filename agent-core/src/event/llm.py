@@ -211,6 +211,82 @@ async def _search_history(
     return '\n---\n'.join(lines)
 
 
+async def _memory_recall(
+    query: typing.Annotated[str, "搜索关键词"],
+    source: typing.Annotated[str, "来源过滤: 'all'=全部, 'subagent'=子代理结论, 'conversation'=对话历史"] = 'all',
+    limit: typing.Annotated[int, "返回最多 N 条结果，默认 5"] = 5,
+    time_range: typing.Annotated[str, "时间范围: '1h'/'6h'/'1d'/'7d'/'' (不限)"] = '',
+) -> str:
+    """从记忆库检索历史信息。包含过去的对话、subagent 分析结论等。当需要回顾历史状态、查找之前的任务结果时使用。"""
+    import time as _time
+    from config import _get_conn
+
+    results = []
+    now = _time.time()
+
+    # 解析时间范围
+    time_cutoff = 0
+    if time_range:
+        multipliers = {'h': 3600, 'd': 86400}
+        unit = time_range[-1]
+        try:
+            num = int(time_range[:-1])
+            time_cutoff = now - num * multipliers.get(unit, 3600)
+        except (ValueError, IndexError):
+            pass
+
+    # 搜索 subagent_conclusions
+    if source in ('all', 'subagent'):
+        try:
+            with _get_conn() as conn:
+                if time_cutoff > 0:
+                    rows = conn.execute(
+                        'SELECT agent_id, goal, conclusion, source_type, created_at '
+                        'FROM subagent_conclusions WHERE conclusion LIKE ? AND created_at > ? '
+                        'ORDER BY created_at DESC LIMIT ?',
+                        (f'%{query}%', time_cutoff, limit)
+                    ).fetchall()
+                else:
+                    rows = conn.execute(
+                        'SELECT agent_id, goal, conclusion, source_type, created_at '
+                        'FROM subagent_conclusions WHERE conclusion LIKE ? '
+                        'ORDER BY created_at DESC LIMIT ?',
+                        (f'%{query}%', limit)
+                    ).fetchall()
+                for agent_id, goal, conclusion, source_type, ts in rows:
+                    time_str = _dt.datetime.fromtimestamp(ts).strftime('%m-%d %H:%M')
+                    results.append({
+                        'ts': ts,
+                        'text': f'[{time_str}] [subagent:{agent_id}/{source_type}] {goal[:40]}\n{conclusion[:300]}',
+                    })
+        except Exception as e:
+            print(f'[memory_recall] conclusions search error: {e}')
+
+    # 搜索对话历史
+    if source in ('all', 'conversation'):
+        try:
+            import chat_history
+            hist_results = chat_history.search(query, limit=limit)
+            for r in hist_results:
+                if time_cutoff > 0 and r['ts'] < time_cutoff:
+                    continue
+                time_str = _dt.datetime.fromtimestamp(r['ts']).strftime('%m-%d %H:%M')
+                results.append({
+                    'ts': r['ts'],
+                    'text': f'[{time_str}] [conversation] {r["preview"][:300]}',
+                })
+        except Exception as e:
+            print(f'[memory_recall] history search error: {e}')
+
+    if not results:
+        return f'未找到与 "{query}" 相关的记忆。'
+
+    # 按时间排序（最新在前），去重截断
+    results.sort(key=lambda x: x['ts'], reverse=True)
+    results = results[:limit]
+    return '\n---\n'.join(r['text'] for r in results)
+
+
 async def _raw_input_info(
     source: typing.Annotated[str, "要查看详情的信息源名称（可通过摘要中的 source name 获得）"],
     limit: typing.Annotated[int, "返回最近 N 条原始事件，默认 20"] = 20,
@@ -331,6 +407,7 @@ class Event:
             ('task_force_clear', event.task.task_force_clear),
             ('raw_input_info', _raw_input_info),
             ('search_history', _search_history),
+            ('memory_recall', _memory_recall),
             ('subagent_spawn', _sa_tools.subagent_spawn),
             ('subagent_spawn_sync', _sa_tools.subagent_spawn_sync),
             ('subagent_status', _sa_tools.subagent_status),
@@ -570,13 +647,32 @@ class Event:
         frozen_system = prompt_mod.build_system(mcp_client.registry, bound_tool_names)
 
         finish_tool = 'finish'
-        max_rounds  = 20
+        llm_cfg = config.main.get('event', {}).get('llm', {})
+        max_rounds  = llm_cfg.get('max_rounds', 100)
+        truncate_keep = llm_cfg.get('truncate_keep_rounds', 50)
+        absolute_max = max_rounds * 5  # 绝对上限防死循环
         response    = None
         decisions   = []
         turn_messages = self._current_turn  # alias for brevity
         _turn_usage = {'prompt_tokens': 0, 'completion_tokens': 0, 'total_tokens': 0, 'cached_tokens': 0}
 
-        for round_idx in range(max_rounds):
+        round_idx = 0
+        total_rounds = 0
+        while True:
+            # ── 绝对上限检查 ──────────────────────────────────────────────
+            if total_rounds >= absolute_max:
+                print(f'[decision] absolute max {absolute_max} reached, forcing end')
+                break
+
+            # ── 截断续跑：达到 max_rounds 时截断 turn_messages ────────────
+            if round_idx >= max_rounds:
+                if len(turn_messages) > truncate_keep:
+                    turn_messages_new = [turn_messages[0]] + turn_messages[-truncate_keep:]
+                    turn_messages.clear()
+                    turn_messages.extend(turn_messages_new)
+                round_idx = 0
+                print(f'[decision] hit max_rounds={max_rounds}, truncated turn_messages to {len(turn_messages)}, continuing')
+                await push_event({'type': 'turn_truncated', 'payload': {'kept': len(turn_messages), 'total_rounds': total_rounds}})
             # ── 构建分层 prompt ────────────────────────────────────────────
             history = self._build_history()
             # 本轮已产生的消息也要加入历史（多轮工具调用场景）
@@ -631,6 +727,7 @@ class Event:
                     tool_list    = all_tool_list,
                     cancel_event = cancel_event,
                     trace_id     = _trace_id,
+                    caller_info  = {'agent_type': 'main_agent'},
                 )
             except TurnCancelled:
                 raise
@@ -660,6 +757,7 @@ class Event:
                             message_list = messages,
                             tool_list    = all_tool_list,
                             trace_id     = _trace_id,
+                            caller_info  = {'agent_type': 'main_agent'},
                         )
                     else:
                         raise
@@ -789,9 +887,17 @@ class Event:
             if finish_tool in [c['function']['name'] for c in tool_calls]:
                 break
 
+            # ── Rebuild frozen_system if skill state changed (activate/deactivate) ─
+            skill_tools = {'activate_skill', 'deactivate_skill'}
+            if any(c['function']['name'] in skill_tools for c in tool_calls):
+                frozen_system = prompt_mod.build_system(mcp_client.registry, bound_tool_names)
+
             # ── 取消检查点：工具执行完毕后，下一轮 LLM 调用前 ────────────────
             if cancel_event and cancel_event.is_set():
                 raise TurnCancelled("Interrupted after tool dispatch")
+
+            round_idx += 1
+            total_rounds += 1
 
         # 检查是否需要压缩（保存由 run_forever 的 finally 统一处理）
         await self._maybe_compress()
@@ -807,12 +913,12 @@ class Event:
         ros2_bridge.publish('/decision_core', json.dumps(decision, ensure_ascii=False))
 
         await push_event({'type': 'turn_end', 'payload': {
-            'rounds': round_idx + 1,
+            'rounds': total_rounds + 1,
             'duration_s': round(_time.perf_counter() - _turn_t0, 2),
             'usage': _turn_usage,
         }})
         _turn_elapsed = _time.perf_counter() - _turn_t0
-        print(f'[decision] turn complete: {_turn_elapsed:.2f}s total, {round_idx + 1} rounds')
+        print(f'[decision] turn complete: {_turn_elapsed:.2f}s total, {total_rounds + 1} rounds')
 
         # 性能追踪：提交 spans
         _turn_end_ts = time.time()

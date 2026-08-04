@@ -23,6 +23,36 @@ let _connSvg    = null;
 let _cards      = [];   // [{ id, mcpId, toolName, driverName, x, y, el }]
 let _allMcps    = [];
 
+// ── Editor Lock ──────────────────────────────────────────────────────────────
+let _sessionId = localStorage.getItem('canvas_session_id');
+if (!_sessionId) {
+  _sessionId = 'sess-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+  localStorage.setItem('canvas_session_id', _sessionId);
+}
+let _isEditor = false;
+let _currentEditor = null;  // session_id of current editor (null = no one)
+
+/** Check if current session can modify. If not, show warning and return false. */
+function _canEdit() {
+  if (!_isEditor) {
+    const msg = _currentEditor ? '画布已被其他用户锁定，无法编辑' : '请先点击「编辑」进入编辑状态';
+    _showToast(msg);
+    return false;
+  }
+  return true;
+}
+
+function _showToast(msg) {
+  const old = document.getElementById('canvas-toast');
+  if (old) old.remove();
+  const toast = document.createElement('div');
+  toast.id = 'canvas-toast';
+  toast.textContent = msg;
+  toast.style.cssText = 'position:absolute;bottom:80px;left:50%;transform:translateX(-50%);width:fit-content;max-width:80%;background:rgba(28,25,23,.85);color:#fff;padding:10px 20px;border-radius:20px;font-size:13px;z-index:9999;pointer-events:none;opacity:0;animation:canvas-toast-in 2.5s ease forwards;';
+  _canvasEl.appendChild(toast);
+  setTimeout(() => toast.remove(), 2600);
+}
+
 // Connection state
 let _connections = [];  // [{id, fromCardId, fromPort, toCardId, toPort, format}]
 let _execConnections = []; // [{id, fromCardId, toCardId, toToolName, toMcpId}]
@@ -33,6 +63,7 @@ let _projectRunning = false;
 
 export function isProjectRunning() { return _projectRunning; }
 export function redrawCanvas() { _redrawConnections(); }
+export function canEdit() { return _canEdit(); }
 
 /**
  * Programmatically add a card to the canvas (used by mobile tap-to-add).
@@ -126,7 +157,14 @@ export async function initCanvas(initialMcps) {
     if (window.innerWidth <= 768 && _cards.length > 0) {
       _fitToViewport();
     }
+
+    // Initialize editor lock state from layout response
+    _currentEditor = layoutJson.editor || null;
+    if (_currentEditor === _sessionId) _isEditor = true;
   } catch { /* start empty */ }
+
+  // Show editor status bar
+  _updateEditorUI();
 
   // Restore project running state from backend
   try {
@@ -436,6 +474,11 @@ function _setupDropZone() {
       return;
     }
 
+    if (!_isEditor) {
+      _showDropReject(e, _currentEditor ? '画布已被其他用户锁定' : '请先获取编辑权');
+      return;
+    }
+
     let data;
     try {
       data = JSON.parse(e.dataTransfer.getData('application/x-cap-card'));
@@ -558,6 +601,7 @@ function _removeCard(id) {
     _logActivity('warn', '请停止智能控制后修改');
     return;
   }
+  if (!_canEdit()) return;
   const idx = _cards.findIndex(c => c.id === id);
   if (idx === -1) return;
   _cards[idx].el.remove();
@@ -957,36 +1001,7 @@ function _buildCardEl({ id, mcpId, toolName, driverName, x, y, topicIn: savedTop
     }
 
     // remote_mic 特殊渲染：麦克风录音按钮
-    if (toolName === 'remote_mic') {
-      const footer = el.querySelector('.canvas-card-footer');
-      const micBtn = document.createElement('button');
-      micBtn.className = 'canvas-mic-btn';
-      micBtn.textContent = isMicActive() ? '\u23F9 停止录音' : '\uD83C\uDF99 开始录音';
-      if (isMicActive()) micBtn.classList.add('recording');
-      micBtn.addEventListener('click', async (e) => {
-        e.stopPropagation();
-        const liveMcp = _allMcps.find(m => m.id === mcpId);
-        if (!liveMcp) return;
-        // Connect mic WebSocket to agent-core's /ws/mic proxy (same host/port as page)
-        const wsProto = location.protocol === 'https:' ? 'wss' : 'ws';
-        const wsUrl = `${wsProto}://${location.host}/ws/mic`;
-        try {
-          // Ensure mic permission is granted before connecting
-          if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-            alert('麦克风不可用：需要 HTTPS 安全连接');
-            return;
-          }
-          await toggleMicStream(wsUrl, (active) => {
-            micBtn.textContent = active ? '\u23F9 停止录音' : '\uD83C\uDF99 开始录音';
-            micBtn.classList.toggle('recording', active);
-          });
-        } catch (err) {
-          console.error('[canvas] mic toggle failed:', err);
-          alert('麦克风启动失败: ' + err.message);
-        }
-      });
-      footer.prepend(micBtn);
-    }
+    // remote_mic: no manual button — mic auto-starts with project
 
     // Generic file upload buttons (format: 'file' in schema)
     el.querySelectorAll('.canvas-file-btn').forEach(btn => {
@@ -1190,6 +1205,7 @@ function _setupPortDrag() {
       _logActivity('warn', '请停止智能控制后修改');
       return;
     }
+    if (!_canEdit()) return;
     e.preventDefault();
     e.stopPropagation();
 
@@ -1306,6 +1322,7 @@ function _redrawConnections() {
         _logActivity('warn', '请停止智能控制后修改');
         return;
       }
+      if (!_canEdit()) return;
       _connections = _connections.filter(c => c.id !== conn.id);
       _resolveAllTopics();
       _autoStopOnDisconnect(conn.toCardId, conn.toPortIdx, conn.fromTopic);
@@ -1381,6 +1398,7 @@ function _redrawConnections() {
     delBtn.addEventListener('mouseleave', () => delBtn.classList.remove('visible'));
 
     const removeExec = () => {
+      if (!_canEdit()) return;
       _execConnections = _execConnections.filter(c => c.id !== conn.id);
       _logActivity('executor', `解绑执行器: ${conn.toToolName || conn.toCardId}`);
       _redrawConnections();
@@ -1525,6 +1543,20 @@ async function _startProject() {
 
   onMotusEvent(null, _onEvent);
 
+  // 立即启动浏览器麦克风（与 API 调用并行，解决 self-check 时序问题）
+  const remoteMicCard = _cards.find(c => c.toolName === 'remote_mic');
+  if (remoteMicCard && !isMicActive()) {
+    const wsProto = location.protocol === 'https:' ? 'wss' : 'ws';
+    const wsUrl = `${wsProto}://${location.host}/ws/mic`;
+    toggleMicStream(wsUrl, (active) => {
+      const micBtn = remoteMicCard.el?.querySelector('.canvas-mic-btn');
+      if (micBtn) {
+        micBtn.textContent = active ? '\u23F9 停止录音' : '\uD83C\uDF99 开始录音';
+        micBtn.classList.toggle('recording', active);
+      }
+    }).catch(err => _logActivity('warn', `麦克风启动失败: ${err.message}`));
+  }
+
   // Call unified backend start-project
   try {
     const res = await fetch('/api/config/start-project', { method: 'POST' });
@@ -1537,7 +1569,9 @@ async function _startProject() {
       const data = await res.json().catch(() => ({}));
       _logActivity('error', `启动失败: ${data.detail || res.status}`);
       offMotusEvent(_onEvent);
-      if (modal) modal.close();
+      if (modal) {
+        _showStartupError(modal);
+      }
     }
   } catch (e) {
     _logActivity('error', `启动失败: ${e.message}`);
@@ -1622,15 +1656,15 @@ async function _triggerAction(mcpId, toolName, action, extraArgs = {}) {
 
 // ── Startup Modal ──────────────────────────────────────────────────────────────
 
-function _showStartupError(modal, close) {
-  const cancelBtn = modal.querySelector('.startup-cancel-btn');
+function _showStartupError(modalWrapper) {
+  const modalEl = modalWrapper.modal;
+  const cancelBtn = modalEl.querySelector('.startup-cancel-btn');
   if (cancelBtn) {
     cancelBtn.textContent = '关闭';
-    cancelBtn.onclick = close;
+    cancelBtn.onclick = () => modalWrapper.close();
   }
-  modal.onCancel = null;
   // Update modal title to indicate failure
-  const title = modal.querySelector('.modal-title');
+  const title = modalEl.querySelector('.modal-title');
   if (title) title.textContent = '启动失败';
 }
 
@@ -1693,7 +1727,11 @@ function _showStartupModal(items) {
   }
 
   const cancelBtn = modal.querySelector('.startup-cancel-btn');
-  cancelBtn.addEventListener('click', () => { if (modal.onCancel) modal.onCancel(); close(); });
+  cancelBtn.addEventListener('click', () => {
+    close();
+    // Actually stop the project when user cancels during startup
+    _stopProject();
+  });
   return { modal, updateItem, close, startCountdown };
 }
 
@@ -1951,6 +1989,7 @@ function _debouncedSave() {
 }
 
 async function _saveLayout() {
+  if (!_isEditor) return;  // Only editor can save
   const cards = _cards.map(c => ({
     id:         c.id,
     mcpId:      c.mcpId,
@@ -1962,11 +2001,17 @@ async function _saveLayout() {
     topicOut:   c.topicOut || [],
   }));
   try {
-    await fetch('/api/canvas/layout', {
+    const resp = await fetch('/api/canvas/layout', {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({ cards, connections: _connections, execConnections: _execConnections, transform: { zoom: _zoom, tx: _tx, ty: _ty } }),
+      body:    JSON.stringify({ cards, connections: _connections, execConnections: _execConnections, transform: { zoom: _zoom, tx: _tx, ty: _ty }, session_id: _sessionId }),
     });
+    if (resp.status === 403) {
+      // Lost edit permission — reload layout from server
+      _isEditor = false;
+      _updateEditorUI();
+      await _reloadLayout();
+    }
   } catch { /* silent */ }
 }
 
@@ -1980,3 +2025,123 @@ function _syncEmptyState() {
 function _esc(s) {
   return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
+
+// ── Editor Lock UI ───────────────────────────────────────────────────────────
+
+const _SVG_PEN = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.85 2.85 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/><path d="m15 5 4 4"/></svg>';
+const _SVG_LOCK = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>';
+
+function _createEditorBar() {
+  const bar = document.createElement('div');
+  bar.id = 'canvas-editor-bar';
+  bar.className = 'canvas-editor-bar';
+  _canvasEl.appendChild(bar);
+  return bar;
+}
+
+function _updateEditorUI() {
+  let bar = document.getElementById('canvas-editor-bar');
+  if (!bar) bar = _createEditorBar();
+
+  if (_isEditor) {
+    bar.innerHTML = `${_SVG_PEN}<span class="editor-label editor-label--active">编辑中</span><button class="editor-btn" id="canvas-release-btn">释放</button>`;
+    bar.querySelector('#canvas-release-btn').onclick = _releaseEdit;
+    _setCanvasReadonly(false);
+  } else if (_currentEditor) {
+    bar.innerHTML = `${_SVG_LOCK}<span class="editor-label editor-label--locked">已锁定</span>`;
+    _setCanvasReadonly(true);
+  } else {
+    bar.innerHTML = `${_SVG_PEN}<button class="editor-btn editor-btn--claim" id="canvas-claim-btn">编辑</button>`;
+    bar.querySelector('#canvas-claim-btn').onclick = _claimEdit;
+    _setCanvasReadonly(true);
+  }
+}
+
+function _setCanvasReadonly(readonly) {
+  // Don't use pointer-events: none — it blocks all interaction including toast triggers.
+  // Instead, each action handler checks _canEdit() individually.
+  document.querySelectorAll('.sidebar-tool-item').forEach(el => {
+    el.draggable = !readonly;
+  });
+}
+
+async function _claimEdit() {
+  try {
+    const resp = await fetch('/api/canvas/claim-edit', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ session_id: _sessionId }),
+    });
+    const data = await resp.json();
+    if (resp.ok) {
+      _isEditor = true;
+      _currentEditor = _sessionId;
+    } else {
+      _currentEditor = data.editor || null;
+    }
+  } catch { /* silent */ }
+  _updateEditorUI();
+}
+
+async function _releaseEdit() {
+  try {
+    await fetch('/api/canvas/release-edit', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ session_id: _sessionId }),
+    });
+  } catch { /* silent */ }
+  _isEditor = false;
+  _currentEditor = null;
+  _updateEditorUI();
+}
+
+async function _checkEditStatus() {
+  try {
+    const resp = await fetch('/api/canvas/edit-status');
+    const data = await resp.json();
+    const prevEditor = _isEditor;
+    _currentEditor = data.editor || null;
+    if (_currentEditor === _sessionId) {
+      _isEditor = true;
+    } else if (_isEditor) {
+      // We lost editor status (timeout)
+      _isEditor = false;
+      _logActivity('warn', '编辑权已超时释放（60秒无操作）');
+    }
+    _updateEditorUI();
+  } catch { /* silent */ }
+}
+
+async function _reloadLayout() {
+  try {
+    const layoutRes = await fetch('/api/canvas/layout');
+    const layoutJson = await layoutRes.json();
+    // Clear current cards
+    for (const c of _cards) c.el.remove();
+    _cards = [];
+    _connections = [];
+    _execConnections = [];
+    // Reload
+    const saved = layoutJson.data?.cards || [];
+    for (const c of saved) _addCard(c, false);
+    const cardIds = new Set(_cards.map(c => c.id));
+    _connections = (layoutJson.data?.connections || []).filter(c => cardIds.has(c.fromCardId) && cardIds.has(c.toCardId));
+    _execConnections = (layoutJson.data?.execConnections || []).filter(c => cardIds.has(c.fromCardId) && cardIds.has(c.toCardId));
+    _resolveAllTopics();
+    _redrawConnections();
+    _syncEmptyState();
+    // Update editor info
+    _currentEditor = layoutJson.editor || null;
+    if (_currentEditor === _sessionId) _isEditor = true;
+    _updateEditorUI();
+  } catch { /* silent */ }
+}
+
+// Release on page close
+window.addEventListener('beforeunload', () => {
+  if (_isEditor) {
+    navigator.sendBeacon('/api/canvas/release-edit', JSON.stringify({ session_id: _sessionId }));
+  }
+});
+
+// Periodically check edit status (piggyback on existing polling interval)
+setInterval(_checkEditStatus, 10000);

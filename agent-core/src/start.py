@@ -4,12 +4,19 @@ import logging
 import pathlib
 import shutil
 import subprocess
+import sys
+
+# Fix Python "dual module" bug: start.py runs as __main__, but other modules
+# `import start` which creates a SEPARATE module instance with its own globals.
+# This ensures `import start` returns the same object as __main__.
+sys.modules['start'] = sys.modules[__name__]
 
 import config
 import auth
 import event
 import collector
 import scheduler
+import daily_summary
 import topic_subscriber
 import mcp_client
 from channel.manager import manager as channel_manager
@@ -288,6 +295,7 @@ async def lifespan(app):
 
     # Pre-create audio publisher so DDS discovery completes before first use
     _ensure_audio_pub()
+    _ensure_mic_pub()
 
     # 注册 AgentCore 自身为 MCP（含 decision_core 工具）
     await loop.run_in_executor(None, _register_core_mcp)
@@ -337,6 +345,7 @@ async def lifespan(app):
         tasks = [
             asyncio.create_task(event.llm.run_forever()),
             asyncio.create_task(scheduler.run()),
+            asyncio.create_task(daily_summary.run()),
         ]
         try:
             yield
@@ -541,25 +550,39 @@ async def _remote_audio_upload(file: fastapi.UploadFile = fastapi.File()):
 # ── Mic WebSocket endpoint (receive browser PCM and publish to ROS2) ──────────
 _mic_pub = None
 
+
+def _ensure_mic_pub():
+    """Lazily create the ROS2 publisher for /remote_control/mic."""
+    global _mic_pub
+    if _mic_pub is not None:
+        return _mic_pub
+    try:
+        from audio_msgs.msg import AudioChunk
+        import ros2_bridge
+        node = ros2_bridge._node_main
+        if node:
+            from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
+            qos = QoSProfile(reliability=ReliabilityPolicy.BEST_EFFORT,
+                             history=HistoryPolicy.KEEP_LAST, depth=200,
+                             durability=DurabilityPolicy.VOLATILE)
+            _mic_pub = node.create_publisher(AudioChunk, "/remote_control/mic", qos)
+    except Exception:
+        pass
+    return _mic_pub
+
+
+_mic_chunk_count = 0
+_mic_ws_connected = False
+
+
 @app.websocket('/ws/mic')
 async def _ws_mic(ws: fastapi.WebSocket):
     """Receive PCM-16k audio from browser and publish to ROS2 topic."""
-    global _mic_pub
+    global _mic_chunk_count, _mic_ws_connected
     await ws.accept()
+    _mic_ws_connected = True
     try:
-        if _mic_pub is None:
-            try:
-                from audio_msgs.msg import AudioChunk
-                import ros2_bridge
-                node = ros2_bridge._node_main
-                if node:
-                    from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
-                    qos = QoSProfile(reliability=ReliabilityPolicy.BEST_EFFORT,
-                                     history=HistoryPolicy.KEEP_LAST, depth=200,
-                                     durability=DurabilityPolicy.VOLATILE)
-                    _mic_pub = node.create_publisher(AudioChunk, "/remote_control/mic", qos)
-            except Exception:
-                pass
+        _ensure_mic_pub()
         while True:
             data = await ws.receive_bytes()
             if _mic_pub:
@@ -573,6 +596,7 @@ async def _ws_mic(ws: fastapi.WebSocket):
                     msg.format = "pcm_16k_16bit_mono"
                     msg.data = list(chunk)
                     _mic_pub.publish(msg)
+                    _mic_chunk_count += 1
     except Exception:
         pass
 
