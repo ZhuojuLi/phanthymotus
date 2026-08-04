@@ -16,18 +16,18 @@
       "destination": "/models/obstacle/dav2_indoor_small_ft.onnx.data"
     },
     {
-      "name": "dav2_outdoor_small_onnx",
-      "url": "http://172.28.4.81:34567/lizhuoju/embodied-ai/obstacle-distance/dav2-metric-small-onnx/dav2_outdoor_small.onnx",
-      "size_bytes": 1843513,
-      "sha256": "ae85175392c12dd5fdb09a5fc42e0f223b7f3f54db925ab79846581b91c6b4b1",
-      "destination": "/models/obstacle/dav2_outdoor_small.onnx"
+      "name": "dav2_outdoor_small_ft_onnx",
+      "url": "http://172.28.4.81:34567/lizhuoju/embodied-ai/obstacle-distance/dav2-metric-small-onnx/dav2_outdoor_small_ft.onnx",
+      "size_bytes": 1846167,
+      "sha256": "086cd54acffeb6ff4eacbbcc931984853a36ce24fb7b469dce19a080c34a1879",
+      "destination": "/models/obstacle/dav2_outdoor_small_ft.onnx"
     },
     {
-      "name": "dav2_outdoor_small_onnx_data",
-      "url": "http://172.28.4.81:34567/lizhuoju/embodied-ai/obstacle-distance/dav2-metric-small-onnx/dav2_outdoor_small.onnx.data",
-      "size_bytes": 98959360,
-      "sha256": "c4abc90dc3dd73b2e113b139f9a1a8e3f206fb3130a8f1fc9f90cb040328194e",
-      "destination": "/models/obstacle/dav2_outdoor_small.onnx.data"
+      "name": "dav2_outdoor_small_ft_onnx_data",
+      "url": "http://172.28.4.81:34567/lizhuoju/embodied-ai/obstacle-distance/dav2-metric-small-onnx/dav2_outdoor_small_ft.onnx.data",
+      "size_bytes": 197795840,
+      "sha256": "b5f5b9ca0ad9263f38b21f416706b3000c4d58ab479f12963a3dea32c5aeb1a3",
+      "destination": "/models/obstacle/dav2_outdoor_small_ft.onnx.data"
     }
   ]
 }
