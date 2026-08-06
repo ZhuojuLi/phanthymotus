@@ -52,5 +52,5 @@ plugins:
     url: ""
     key: ""
     model: ""
-    model_dir: /models/obstacle   # ONNX cache; baked into the image at build time
+    model_dir: /opt/phanthy-motus/models/obstacle   # image-baked; not hidden by runtime /models mount
     gpu: false                    # CPU keeps GPU <10% (Jetson constraint)

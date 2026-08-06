@@ -31,7 +31,8 @@ RUN pip3 install --no-cache-dir -i ${PYPI_MIRROR} \
 
 # Obstacle models are external artifacts baked into the image at build time
 # (downloaded from the juicefs mirror, sha256+size verified) so the runtime
-# container never needs network access for them.
+# container never needs network access for them. Destinations live under
+# /opt/phanthy-motus/models/obstacle so a runtime /models mount cannot hide them.
 COPY models/obstacle-artifacts.json /tmp/obstacle-artifacts.json
 COPY utils/obstacle_model_downloader.py /tmp/obstacle_model_downloader.py
 RUN python3 /tmp/obstacle_model_downloader.py \

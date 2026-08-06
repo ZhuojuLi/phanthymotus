@@ -97,7 +97,7 @@ TOOLS = [
             "type": "object",
             "properties": {
                 "provider": {"type": "string", "enum": ["local"], "description": "inference provider", "scope": "shared"},
-                "model_dir": {"type": "string", "description": "local ONNX cache dir", "default": "/models/obstacle"},
+                "model_dir": {"type": "string", "description": "local ONNX cache dir", "default": "/opt/phanthy-motus/models/obstacle"},
                 "gpu": {"type": "boolean", "description": "prefer CUDAExecutionProvider", "default": False},
             },
         },
@@ -205,7 +205,7 @@ class LocalDistanceAdapter:
 
     def __init__(self, cfg: dict):
         cfg = cfg or {}
-        self._model_dir = cfg.get("model_dir", "/models/obstacle")
+        self._model_dir = cfg.get("model_dir", "/opt/phanthy-motus/models/obstacle")
         self._prefer_gpu = bool(cfg.get("gpu", False))
         self._estimator: Optional[_OnnxDepth] = None
         self._infer_count = 0
@@ -399,7 +399,7 @@ class ObstacleDistancePlugin:
         self._namespace = namespace
         self._executor = executor
         self._plugin_cfg = deepcopy(plugin_cfg or {})
-        self._model_dir = self._plugin_cfg.get("model_dir", "/models/obstacle")
+        self._model_dir = self._plugin_cfg.get("model_dir", "/opt/phanthy-motus/models/obstacle")
         self._prefer_gpu = bool(self._plugin_cfg.get("gpu", False))
         self._adapter: Optional[LocalDistanceAdapter] = None
         self._load_error: Optional[str] = None
@@ -540,7 +540,7 @@ class ObstacleDistancePlugin:
             relevant = ("model_dir", "gpu")
             changed = any(merged_cfg.get(k) != self._plugin_cfg.get(k) for k in relevant)
             self._plugin_cfg = merged_cfg
-            self._model_dir = merged_cfg.get("model_dir", "/models/obstacle")
+            self._model_dir = merged_cfg.get("model_dir", "/opt/phanthy-motus/models/obstacle")
             self._prefer_gpu = bool(merged_cfg.get("gpu", False))
             if changed or self._adapter is None:
                 log.info("[obstacle] config: adapter rebuilt")

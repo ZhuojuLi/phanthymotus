@@ -6,28 +6,28 @@
       "url": "http://172.28.4.81:34567/lizhuoju/embodied-ai/obstacle-distance/dav2-metric-small-onnx/dav2_indoor_small_ft.onnx",
       "size_bytes": 1844031,
       "sha256": "0c051be0e0b786cc97cecc41c24c82a2f6e3d086fdb76d6fdc0031b2d885976e",
-      "destination": "/models/obstacle/dav2_indoor_small_ft.onnx"
+      "destination": "/opt/phanthy-motus/models/obstacle/dav2_indoor_small_ft.onnx"
     },
     {
       "name": "dav2_indoor_small_ft_onnx_data",
       "url": "http://172.28.4.81:34567/lizhuoju/embodied-ai/obstacle-distance/dav2-metric-small-onnx/dav2_indoor_small_ft.onnx.data",
       "size_bytes": 98959360,
       "sha256": "c85e686531a611a480fae0232c12b6e60168325eca123c72e1cf313282cad7c0",
-      "destination": "/models/obstacle/dav2_indoor_small_ft.onnx.data"
+      "destination": "/opt/phanthy-motus/models/obstacle/dav2_indoor_small_ft.onnx.data"
     },
     {
       "name": "dav2_outdoor_small_ft2_onnx",
       "url": "http://172.28.4.81:34567/lizhuoju/embodied-ai/obstacle-distance/dav2-metric-small-onnx/dav2_outdoor_small_ft2.onnx",
       "size_bytes": 1846452,
       "sha256": "db902e1b3022d259bdea42ab5daa07b1f64873cc999973ba7662e06b10f2212f",
-      "destination": "/models/obstacle/dav2_outdoor_small_ft2.onnx"
+      "destination": "/opt/phanthy-motus/models/obstacle/dav2_outdoor_small_ft2.onnx"
     },
     {
       "name": "dav2_outdoor_small_ft2_onnx_data",
       "url": "http://172.28.4.81:34567/lizhuoju/embodied-ai/obstacle-distance/dav2-metric-small-onnx/dav2_outdoor_small_ft2.onnx.data",
       "size_bytes": 197795840,
       "sha256": "95f751ff52e58a85478f7c12812549d8711a5e175bc9755971faac85ff30ef37",
-      "destination": "/models/obstacle/dav2_outdoor_small_ft2.onnx.data"
+      "destination": "/opt/phanthy-motus/models/obstacle/dav2_outdoor_small_ft2.onnx.data"
     }
   ]
 }
