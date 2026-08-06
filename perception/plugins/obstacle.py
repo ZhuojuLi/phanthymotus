@@ -59,7 +59,7 @@ _JUICEFS_BASE = os.environ.get(
     "http://172.28.4.81:34567/lizhuoju/embodied-ai/obstacle-distance/dav2-metric-small-onnx")
 _MODEL_FILES = {
     "indoor": "dav2_indoor_small_ft.onnx",     # fine-tuned on NYU ROI-P1 labels (val F1@1m 0.80)
-    "outdoor": "dav2_outdoor_small_ft2.onnx",  # fine-tuned on vkitti2 w/ plugin ROI-P1 statistic (val F1@1m 0.74)
+    "outdoor": "dav2_outdoor_small_ft3.onnx",  # round-4: + nuScenes mini real finetune (real F1@3m 0.89, RMSE 1.45)
 }
 # weights live in a sidecar file (external-data ONNX) — downloaded alongside
 _EXTRA_FILES = [f + ".data" for f in _MODEL_FILES.values()]
@@ -178,7 +178,19 @@ class _OnnxDepth:
                     avail = ort.get_available_providers()
                     if self._prefer_gpu and "CUDAExecutionProvider" in avail:
                         providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
-                    sess = ort.InferenceSession(self._model_path(scene), providers=providers)
+                    sess_opts = ort.SessionOptions()
+                    # Multi-thread the CPU EP. The image caps BLAS thread pools
+                    # at 1 (OMP_NUM_THREADS=1 etc. in Dockerfile.jetson) to keep
+                    # container RAM predictable, but ORT's own thread pool is
+                    # governed by these options, not env vars; 4 threads keeps
+                    # single-frame CPU latency ~3-4x lower than the serialized
+                    # default without extra processes.
+                    threads = int(os.environ.get("OBSTACLE_ORT_THREADS", "4"))
+                    sess_opts.intra_op_num_threads = threads
+                    sess_opts.inter_op_num_threads = 1
+                    sess = ort.InferenceSession(self._model_path(scene),
+                                                sess_options=sess_opts,
+                                                providers=providers)
                     self._sessions[scene] = sess
                     log.info(f"[obstacle] {scene} session ready "
                              f"({sess.get_providers()[0]})")
@@ -272,9 +284,9 @@ class _ObstacleNode:
         self._String = String
         self._CompressedImage = CompressedImage
         self._qos_sub = QoSProfile(
-            reliability=ReliabilityPolicy.RELIABLE,
+            reliability=ReliabilityPolicy.BEST_EFFORT,
             history=HistoryPolicy.KEEP_LAST,
-            depth=50,
+            depth=1,
             durability=DurabilityPolicy.VOLATILE,
         )
         self._qos_pub = QoSProfile(
@@ -291,7 +303,7 @@ class _ObstacleNode:
 
         self._pub = self._node.create_publisher(String, self._output_topic, self._qos_pub)
         self._sub: Optional[object] = None
-        self._frame_queue: queue.Queue = queue.Queue(maxsize=10)
+        self._frame_queue: queue.Queue = queue.Queue(maxsize=1)
         self._stop_event = threading.Event()
         self._worker: Optional[threading.Thread] = None
         self._detect_count = 0
@@ -341,20 +353,18 @@ class _ObstacleNode:
             log.warning("[obstacle] received image frame with invalid data on %s",
                         self._input_topic)
             return
-        log.info(f"[obstacle] received image frame: size={len(image_bytes)} bytes, "
-                 f"format={msg.format}, topic={self._input_topic}")
-        # Drop old frame if queue full (no backpressure)
+        # Latest-wins: drop any queued frame that is still waiting for the
+        # worker, then enqueue this one. Inference is far slower than the
+        # camera rate, so every queued-but-unprocessed frame is stale by the
+        # time it would run.
+        try:
+            self._frame_queue.get_nowait()
+        except queue.Empty:
+            pass
         try:
             self._frame_queue.put_nowait(image_bytes)
         except queue.Full:
-            try:
-                self._frame_queue.get_nowait()
-            except queue.Empty:
-                pass
-            try:
-                self._frame_queue.put_nowait(image_bytes)
-            except queue.Full:
-                pass
+            pass
 
     def _inference_worker(self):
         while not self._stop_event.is_set():

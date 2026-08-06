@@ -89,7 +89,7 @@ RUN python3 -m py_compile \
       /work/main.py \
       /work/plugins/obstacle.py \
       /work/utils/obstacle_model_downloader.py && \
-    python3 -c "import os, cv2, onnxruntime as ort; root='/opt/phanthy-motus/models/obstacle'; names=['dav2_indoor_small_ft.onnx','dav2_indoor_small_ft.onnx.data','dav2_outdoor_small_ft2.onnx','dav2_outdoor_small_ft2.onnx.data']; assert all(os.path.isfile(os.path.join(root, n)) for n in names); [ort.InferenceSession(os.path.join(root, n), providers=['CPUExecutionProvider']) for n in names if n.endswith('.onnx')]"
+    python3 -c "import os, cv2, onnxruntime as ort; root='/opt/phanthy-motus/models/obstacle'; names=['dav2_indoor_small_ft.onnx','dav2_indoor_small_ft.onnx.data','dav2_outdoor_small_ft3.onnx','dav2_outdoor_small_ft3.onnx.data']; assert all(os.path.isfile(os.path.join(root, n)) for n in names); [ort.InferenceSession(os.path.join(root, n), providers=['CPUExecutionProvider']) for n in names if n.endswith('.onnx')]"
 
 EXPOSE 15720
 EXPOSE 15721
