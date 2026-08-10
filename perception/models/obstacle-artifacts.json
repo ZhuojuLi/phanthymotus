@@ -16,18 +16,25 @@
       "destination": "/opt/phanthy-motus/models/obstacle/dav2_indoor_small_ft.onnx.data"
     },
     {
-      "name": "dav2_outdoor_small_ft3_onnx",
-      "url": "http://172.28.4.81:34567/lizhuoju/embodied-ai/obstacle-distance/dav2-metric-small-onnx/dav2_outdoor_small_ft3.onnx",
+      "name": "dav2_outdoor_small_ft4_onnx",
+      "url": "http://172.28.4.81:34567/lizhuoju/embodied-ai/obstacle-distance/dav2-metric-small-onnx/dav2_outdoor_small_ft4.onnx",
       "size_bytes": 1844548,
-      "sha256": "c029838f8cac0863f56ee4f5e81aa83f8f8cb1470b0865c403649edba5946d3a",
-      "destination": "/opt/phanthy-motus/models/obstacle/dav2_outdoor_small_ft3.onnx"
+      "sha256": "7fe168f3e5416e36323465651eba606491f568f1a8bd2d15488346259a966b92",
+      "destination": "/opt/phanthy-motus/models/obstacle/dav2_outdoor_small_ft4.onnx"
     },
     {
-      "name": "dav2_outdoor_small_ft3_onnx_data",
-      "url": "http://172.28.4.81:34567/lizhuoju/embodied-ai/obstacle-distance/dav2-metric-small-onnx/dav2_outdoor_small_ft3.onnx.data",
+      "name": "dav2_outdoor_small_ft4_onnx_data",
+      "url": "http://172.28.4.81:34567/lizhuoju/embodied-ai/obstacle-distance/dav2-metric-small-onnx/dav2_outdoor_small_ft4.onnx.data",
       "size_bytes": 98959360,
-      "sha256": "61ce23373be9cf91c60c29138649b534418ef3f87b54ce2e6642bea5110fd455",
-      "destination": "/opt/phanthy-motus/models/obstacle/dav2_outdoor_small_ft3.onnx.data"
+      "sha256": "871577eaebf222ef07fddcb19f2151eb6fbdc9f7f2ecac7600eb081d0cae8610",
+      "destination": "/opt/phanthy-motus/models/obstacle/dav2_outdoor_small_ft4.onnx.data"
+    },
+    {
+      "name": "yolo26n_seg_onnx",
+      "url": "http://172.28.4.81:34567/lizhuoju/embodied-ai/obstacle-distance/dav2-metric-small-onnx/yolo26n-seg.onnx",
+      "size_bytes": 11164634,
+      "sha256": "cef701e7aac2381aaaa7c740d0c6ec6151d49d1f14aec558b6035ece73c99790",
+      "destination": "/opt/phanthy-motus/models/obstacle/yolo26n-seg.onnx"
     }
   ]
 }

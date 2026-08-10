@@ -12,8 +12,11 @@ Protocol aligned with the leaderboard harness (MCP_TOPIC_MODE):
   testing (same inference path, no ROS needed).
 
 Inference backend: Depth Anything V2 Metric (Small) dual-head ONNX, routed by
-image encoding (PNG -> indoor head, JPG -> outdoor head). Distance = P1
-percentile of ROI (cols 213~426, rows 0~300 of 640x480) in meters.
+image encoding (PNG -> indoor head, JPG -> outdoor head). Indoor distance = P1
+percentile of ROI (cols 213~426, rows 0~300 of 640x480). Outdoor distance =
+P1 percentile of depth inside a YOLO26n-seg union vehicle mask over the FULL
+image (leaderboard metric is F1@2m; near vehicles extend below the ROI).
+Empty mask -> 30m ("no obstacle"), matching the ft4 training contract.
 
 Submission contract: any failure falls back to a safe value so the
 failure-rate monitor stays at 0; the plugin init never raises (a crashing
@@ -43,13 +46,17 @@ log = logging.getLogger(__name__)
 
 # ── Inference constants ───────────────────────────────────────────────────────
 
-_INPUT_H, _INPUT_W = 308, 308        # model input resolution
-_ROI_COL0, _ROI_COL1 = 213, 426      # 640x480 reference frame
+_INPUT_H, _INPUT_W = 308, 308        # depth model input resolution
+_SEG_INPUT = 640                     # yolo26n-seg input resolution
+_ROI_COL0, _ROI_COL1 = 213, 426      # 640x480 reference frame (indoor statistic)
 _ROI_ROW0, _ROI_ROW1 = 0, 300
 _PCT = 1.0                           # P1 percentile
 _NO_OBSTACLE = 30.0                  # safe "far" value (also F1 negative)
 _FAIL_SAFE = 3.0                     # fallback on failure (keeps RMSE small)
-_DECISION_THRESHOLD_M = 1.0          # F1@1m decision boundary
+_DECISION_THRESHOLD_M = 2.0          # leaderboard metric is F1@2m
+_SEG_CONF = 0.25                     # yolo26n-seg confidence threshold
+_SEG_CLASSES = (0.0, 1.0, 2.0, 3.0, 5.0, 7.0)  # person/bicycle/car/motorcycle/bus/truck
+_SEG_MIN_PX = 16                     # min mask pixels at 308x308 scale (train contract)
 
 _MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32).reshape(3, 1, 1)
 _STD = np.array([0.229, 0.224, 0.225], dtype=np.float32).reshape(3, 1, 1)
@@ -59,10 +66,11 @@ _JUICEFS_BASE = os.environ.get(
     "http://172.28.4.81:34567/lizhuoju/embodied-ai/obstacle-distance/dav2-metric-small-onnx")
 _MODEL_FILES = {
     "indoor": "dav2_indoor_small_ft.onnx",     # fine-tuned on NYU ROI-P1 labels (val F1@1m 0.80)
-    "outdoor": "dav2_outdoor_small_ft3.onnx",  # round-4: + nuScenes mini real finetune (real F1@3m 0.89, RMSE 1.45)
+    "outdoor": "dav2_outdoor_small_ft4.onnx",  # round-5 ft4: mask-P1 @ F1@2m supervision (val F1@2m 0.595)
+    "seg": "yolo26n-seg.onnx",                 # outdoor vehicle mask (3.1M params; total ~28M < 30M budget)
 }
-# weights live in a sidecar file (external-data ONNX) — downloaded alongside
-_EXTRA_FILES = [f + ".data" for f in _MODEL_FILES.values()]
+# depth heads keep weights in an external-data sidecar — downloaded alongside
+_EXTRA_FILES = ["dav2_indoor_small_ft.onnx.data", "dav2_outdoor_small_ft4.onnx.data"]
 
 TOOLS = [
     {
@@ -130,6 +138,68 @@ def roi_p1(depth_m: np.ndarray) -> float:
     return float(np.percentile(valid, _PCT))
 
 
+def mask_p1(depth_m: np.ndarray, mask: np.ndarray) -> float:
+    """P1 percentile of depth inside the vehicle mask (full image). Empty/small
+    mask -> _NO_OBSTACLE ("no obstacle"), same contract as ft4 training."""
+    min_px = _SEG_MIN_PX * (mask.size / (_INPUT_H * _INPUT_W))
+    if int(mask.sum()) < max(1, int(min_px)):
+        return _NO_OBSTACLE
+    vals = depth_m[mask]
+    vals = vals[np.isfinite(vals) & (vals > 1e-3)]
+    if vals.size == 0:
+        return _NO_OBSTACLE
+    return float(np.percentile(vals, _PCT))
+
+
+def _letterbox(bgr: np.ndarray, new: int = _SEG_INPUT):
+    h, w = bgr.shape[:2]
+    r = min(new / h, new / w)
+    nh, nw = int(round(h * r)), int(round(w * r))
+    import cv2
+    im = cv2.resize(bgr, (nw, nh), interpolation=cv2.INTER_LINEAR)
+    top = (new - nh) // 2
+    left = (new - nw) // 2
+    im = cv2.copyMakeBorder(im, top, new - nh - top, left, new - nw - left,
+                            cv2.BORDER_CONSTANT, value=(114, 114, 114))
+    return im, r, left, top
+
+
+def seg_union_mask(sess, bgr: np.ndarray) -> np.ndarray:
+    """YOLO26n-seg ONNX -> union vehicle mask at original resolution.
+
+    yolo26n-seg is NMS-free: output0 (1,300,38) rows are
+    [x1,y1,x2,y2,conf,cls, 32 mask coeffs] in 640 letterboxed coords;
+    output1 (1,32,160,160) are the mask protos.
+    """
+    import cv2
+    im, r, dw, dh = _letterbox(bgr)
+    x = cv2.cvtColor(im, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
+    x = x.transpose(2, 0, 1)[None]
+    out0, out1 = sess.run(None, {"images": x})
+    det = out0[0]
+    cls = det[:, 5]
+    keep = det[(det[:, 4] > _SEG_CONF) & np.isin(cls, _SEG_CLASSES)]
+    h0, w0 = bgr.shape[:2]
+    union = np.zeros((h0, w0), dtype=bool)
+    if len(keep) == 0:
+        return union
+    protos = out1[0]
+    mh, mw = protos.shape[1:]
+    masks = 1.0 / (1.0 + np.exp(
+        -(keep[:, 6:38] @ protos.reshape(32, -1)).reshape(-1, mh, mw)))
+    for j, m in enumerate(masks):
+        x1, y1, x2, y2 = keep[j, 0:4]
+        mx1 = int(max(x1 / 4.0, 0)); mx2 = int(min(x2 / 4.0 + 1, mw))
+        my1 = int(max(y1 / 4.0, 0)); my2 = int(min(y2 / 4.0 + 1, mh))
+        mm = np.zeros_like(m)
+        mm[my1:my2, mx1:mx2] = m[my1:my2, mx1:mx2]
+        full = cv2.resize(mm, (_SEG_INPUT, _SEG_INPUT), interpolation=cv2.INTER_LINEAR)
+        crop = full[dh:dh + int(round(h0 * r)), dw:dw + int(round(w0 * r))]
+        crop = cv2.resize(crop, (w0, h0), interpolation=cv2.INTER_LINEAR)
+        union |= crop > 0.5
+    return union
+
+
 def preprocess(bgr: np.ndarray) -> np.ndarray:
     """BGR uint8 -> (1,3,H,W) float32 ImageNet-normalized."""
     import cv2
@@ -154,11 +224,13 @@ class _OnnxDepth:
     def _model_path(self, scene: str) -> str:
         fname = _MODEL_FILES[scene]
         path = os.path.join(self._dir, fname)
-        data_path = path + ".data"
-        if os.path.isfile(path) and os.path.isfile(data_path):
+        # depth heads store weights in an external-data sidecar; the seg model
+        # is small enough to be self-contained.
+        sidecars = [fname + ".data"] if fname + ".data" in _EXTRA_FILES else []
+        if os.path.isfile(path) and all(os.path.isfile(path + ".data") for _ in sidecars):
             return path
         os.makedirs(self._dir, exist_ok=True)
-        for f in (fname, fname + ".data"):
+        for f in [fname] + sidecars:
             dst = os.path.join(self._dir, f)
             if os.path.isfile(dst):
                 continue
@@ -209,6 +281,10 @@ class _OnnxDepth:
             depth = cv2.resize(depth, (w, h), interpolation=cv2.INTER_LINEAR)
         return depth
 
+    def vehicle_mask(self, bgr: np.ndarray) -> np.ndarray:
+        """Union vehicle mask at the input image resolution (outdoor only)."""
+        return seg_union_mask(self._get("seg"), bgr)
+
 
 # ── Distance adapter (shared by one-shot estimate and ROS instances) ──────────
 
@@ -245,8 +321,13 @@ class LocalDistanceAdapter:
                         "near_obstacle": _FAIL_SAFE < _DECISION_THRESHOLD_M,
                         "scene": scene, "status": "error", "error_code": "decode_failed",
                         "fallback": True}
-            depth = self._ensure().predict_depth(img, scene)
-            dist = roi_p1(depth)
+            est = self._ensure()
+            depth = est.predict_depth(img, scene)
+            if scene == "outdoor":
+                # mask-P1 inside full-image vehicle mask; empty mask -> 30m
+                dist = mask_p1(depth, est.vehicle_mask(img))
+            else:
+                dist = roi_p1(depth)
             if not np.isfinite(dist):
                 dist = _FAIL_SAFE
             self._infer_count += 1
@@ -421,7 +502,10 @@ class ObstacleDistancePlugin:
         # first frame. Never raise — a crashing init kills the whole bundle.
         try:
             for scene, fname in _MODEL_FILES.items():
-                for f in (fname, fname + ".data"):
+                files = [fname]
+                if fname + ".data" in _EXTRA_FILES:
+                    files.append(fname + ".data")
+                for f in files:
                     p = os.path.join(self._model_dir, f)
                     if not os.path.isfile(p):
                         raise FileNotFoundError(p)
