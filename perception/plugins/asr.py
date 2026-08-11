@@ -183,29 +183,69 @@ def _find_keyword_in_ipa(text_ipa: list, keyword_ipa: list, threshold: float):
 
 
 def _extract_after_keyword(text: str, keyword_text: str, end_pos: int) -> str:
-    """Extract text after the matched keyword.
-    Uses keyword text length to determine how many characters to skip,
-    then handles the case where ASR text has slightly different char count.
+    """Extract text after the matched keyword using IPA end_pos to locate cut point.
+
+    end_pos is the IPA phoneme index where the keyword match ends.
+    We map this back to the original text by counting phoneme-producing
+    characters and their IPA token counts per segment.
     """
-    # Count phoneme-producing characters in original text up to end_pos
-    # Simpler approach: use the keyword character length as skip count
-    kw_chars = len([c for c in keyword_text if '\u4e00' <= c <= '\u9fff' or c.isalpha()])
+    # Build segments of phoneme-producing characters
+    segments = []
+    current = ''
+    current_is_cjk = None
+    for char in text:
+        is_cjk = '\u4e00' <= char <= '\u9fff'
+        is_alpha = char.isalpha()
+        if not is_cjk and not is_alpha:
+            continue
+        if current_is_cjk is None:
+            current_is_cjk = is_cjk
+        if is_cjk != current_is_cjk:
+            if current.strip():
+                segments.append((current.strip(), current_is_cjk))
+            current = ''
+            current_is_cjk = is_cjk
+        current += char
+    if current.strip():
+        segments.append((current.strip(), current_is_cjk))
 
-    # Skip that many phoneme-producing characters in text
-    skipped = 0
-    cut_idx = 0
-    for i, char in enumerate(text):
-        if '\u4e00' <= char <= '\u9fff' or char.isalpha():
-            skipped += 1
-        if skipped >= kw_chars:
-            cut_idx = i + 1
-            break
+    # Count IPA tokens per segment to find the text position for end_pos
+    ipa_idx = 0
+    phoneme_char_pos = 0
 
-    if cut_idx == 0:
-        return ''
-    remaining = text[cut_idx:]
-    remaining = remaining.lstrip('，。！？、；：,.!?;: ')
-    return remaining
+    for seg_text, is_cjk in segments:
+        lang = 'cmn' if is_cjk else 'en-us'
+        try:
+            ipa = _phonemize_safe(seg_text, lang)
+            ipa = _re.sub(r'[0-9˥˦˧˨˩¹²³⁴⁵]', '', ipa)
+            phones = [p for p in ipa.split() if p]
+        except Exception:
+            phones = list(seg_text)
+
+        seg_ipa_count = len(phones)
+        if ipa_idx + seg_ipa_count >= end_pos:
+            offset_in_seg = end_pos - ipa_idx
+            chars_in_seg = len(seg_text)
+            if seg_ipa_count > 0:
+                cut_chars = round(offset_in_seg * chars_in_seg / seg_ipa_count)
+            else:
+                cut_chars = chars_in_seg
+            cut_chars = min(cut_chars, chars_in_seg)
+
+            found = 0
+            for i, c in enumerate(text):
+                if '\u4e00' <= c <= '\u9fff' or c.isalpha():
+                    found += 1
+                if found >= phoneme_char_pos + cut_chars:
+                    cut_idx = i + 1
+                    remaining = text[cut_idx:]
+                    remaining = remaining.lstrip('，。！？、；：,.!?;: ')
+                    return remaining
+            return ''
+        ipa_idx += seg_ipa_count
+        phoneme_char_pos += len(seg_text)
+
+    return ''
 
 _ASR_PUB_QOS = QoSProfile(
     reliability=ReliabilityPolicy.BEST_EFFORT,
@@ -632,10 +672,12 @@ def _vad_worker(pcm_q: multiprocessing.Queue, result_q: multiprocessing.Queue,
     # ── State machine ──
     # States: 'waiting_wake' (KWS mode) or 'listening' (direct mode / post-wake)
     state = 'waiting_wake' if kws_enabled else 'listening'
+    _kws_triggered = False
     speech_buf = b''
     start_ts = None
     end_ts = None
     kws_cooldown_until = 0.0
+    _was_speaking = False  # Track speech onset for hook notification
 
     _log.info(f"[vad-worker] process started (pid={os.getpid()}, backend=sherpa_onnx, kws={kws_enabled})")
     audio_count = 0
@@ -719,6 +761,7 @@ def _vad_worker(pcm_q: multiprocessing.Queue, result_q: multiprocessing.Queue,
                         _log.info(f"[vad-worker] WAKE WORD detected: {kw.strip()}")
                         # Transition to listening — start recording immediately
                         state = 'listening'
+                        _kws_triggered = True
                         speech_buf = pcm  # include current frame (user may already be speaking)
                         start_ts = ts
                         end_ts = ts
@@ -733,6 +776,12 @@ def _vad_worker(pcm_q: multiprocessing.Queue, result_q: multiprocessing.Queue,
                 vad.pop()
 
         elif state == 'listening':
+            # Detect speech onset → notify main thread for on_hearing hook
+            _is_speaking = vad.is_speech_detected()
+            if _is_speaking and not _was_speaking:
+                result_q.put(("speech_start", ts, ts, False))
+            _was_speaking = _is_speaking
+
             # Collect completed VAD segments
             while not vad.empty():
                 seg = vad.front
@@ -750,7 +799,8 @@ def _vad_worker(pcm_q: multiprocessing.Queue, result_q: multiprocessing.Queue,
                     if save_vad_segments:
                         _save_segment_pcm(speech_buf, _seg_count)
                         _seg_count[0] += 1
-                    result_q.put((speech_buf, start_ts or ts, end_ts or ts))
+                    result_q.put((speech_buf, start_ts or ts, end_ts or ts, _kws_triggered))
+                    _kws_triggered = False
                     speech_buf = b''
                     start_ts = None
                     end_ts = None
@@ -917,6 +967,7 @@ class _ASRNode(Node):
 
     def _worker_inner(self):
         # Pre-compute keyword IPA if in asr_kws mode
+        _kws_triggered = False  # track whether current utterance was KWS-triggered
         trigger_mode = self._kws_cfg.get('trigger_mode', 'kws')
         keyword_ipa = None
         asr_kws_threshold = float(self._kws_cfg.get('asr_kws_threshold', 0.3))
@@ -935,7 +986,31 @@ class _ASRNode(Node):
 
         while not self._stop_event.is_set():
             try:
-                utterance, start_ts, end_ts = self._utterance_queue.get(timeout=1)
+                item = self._utterance_queue.get(timeout=1)
+                # Handle speech onset signal from VAD worker
+                if len(item) >= 2 and item[0] == "speech_start":
+                    try:
+                        import urllib.request as _urllib_req
+                        import json as _json_hook
+                        _hook_req = _urllib_req.Request(
+                            "https://localhost:15678/api/hooks/fire",
+                            data=_json_hook.dumps({"hook": "on_hearing"}).encode(),
+                            headers={"Content-Type": "application/json"},
+                            method="POST"
+                        )
+                        import ssl as _ssl
+                        _ctx = _ssl.create_default_context()
+                        _ctx.check_hostname = False
+                        _ctx.verify_mode = _ssl.CERT_NONE
+                        _urllib_req.urlopen(_hook_req, timeout=2, context=_ctx)
+                    except Exception as _he:
+                        log.debug(f"[asr] fire on_hearing failed: {_he}")
+                    continue
+                if len(item) == 4:
+                    utterance, start_ts, end_ts, _kws_from_vad = item
+                else:
+                    utterance, start_ts, end_ts = item[:3]
+                    _kws_from_vad = False
             except Exception:
                 continue
             try:
@@ -970,15 +1045,20 @@ class _ASRNode(Node):
                     # Extract text after keyword
                     remaining = _extract_after_keyword(text, kw_text, end_pos)
                     log.info(f"[asr] asr_kws TRIGGERED: '{text}' → '{remaining}'")
+                    _kws_triggered = True
                     if not remaining.strip():
                         continue
                     text = remaining
 
+                _kws_was_triggered = _kws_triggered or _kws_from_vad
+                _kws_triggered = False
+                self._kws_triggered = False
                 result = {"text": text, "audio_start_ts": start_ts,
                           "audio_end_ts": end_ts, "asr_complete_ts": time.time(),
                           "audio_duration_ms": int(len(utterance) / 32),
                           "text_length": len(text),
                           "priority": 1,
+                          "kws_triggered": _kws_was_triggered,
                           "spans": _spans}
                 msg = String(); msg.data = json.dumps(result, ensure_ascii=False)
                 self._pub.publish(msg)

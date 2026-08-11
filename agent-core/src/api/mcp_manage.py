@@ -284,6 +284,13 @@ def _guess_data_type(tools: list, resources: list, name: str) -> str:
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
+@router.get('/hooks/status')
+async def hooks_status():
+    """Return hook registry and recent fire log for diagnostics."""
+    import hooks
+    return {'code': 200, 'data': hooks.get_status()}
+
+
 @router.get('')
 async def mcp_list():
     items = [
@@ -518,11 +525,13 @@ async def _do_ping(mcp_id: str) -> dict:
         if len(tool_schemas) == 1:
             schema = tool_schemas[0]
             schemas[schema['name']] = schema
-            action_enum = (tool.get('inputSchema') or {}).get('properties', {}).get('action', {}).get('enum')
+            raw_input_schema = tool.get('inputSchema') or {}
+            action_enum = raw_input_schema.get('properties', {}).get('action', {}).get('enum')
             tool_meta_map[schema['name']] = {
                 'type': tool.get('type'),
                 'action_enum': action_enum,
                 'has_config_schema': bool(tool.get('configSchema')),
+                'completion': raw_input_schema.get('x-completion'),
             }
         else:
             group = []
@@ -532,6 +541,7 @@ async def _do_ping(mcp_id: str) -> dict:
                     'type': tool.get('type'),
                     'action_enum': None,
                     'has_config_schema': bool(tool.get('configSchema')),
+                    'completion': (tool.get('inputSchema') or {}).get('x-completion'),
                 }
                 action_name = schema['name'].split('__')[-1]
                 split_map[schema['name']] = {
@@ -554,6 +564,13 @@ async def _do_ping(mcp_id: str) -> dict:
         'split_map':   split_map,
         'tool_groups': tool_groups,
     }
+
+    # Register system hooks from x-hooks declarations
+    import hooks
+    for tool in caps['tools']:
+        x_hooks = (tool.get('inputSchema') or {}).get('x-hooks')
+        if x_hooks and isinstance(x_hooks, dict):
+            hooks.register(mcp_id, tool.get('name', ''), x_hooks)
 
     # Notify inspection module about all topics from this device
     asyncio.create_task(_notify_inspector(mcp_id, topic_out + topic_in))

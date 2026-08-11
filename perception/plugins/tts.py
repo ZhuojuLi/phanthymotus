@@ -24,6 +24,11 @@ log = logging.getLogger(__name__)
 SAMPLE_RATE = 16000
 CHUNK_BYTES = 3200  # 100ms @ 16kHz 16-bit mono
 
+# EOF magic: 8 bytes (4 samples [1, -1, 1, -1])，标记 utterance 结束
+# 正常 chunk 始终 3200 bytes，8 bytes 短 chunk 不会被误判
+# 即使被不识别 EOF 的旧 Speaker 播放，也只是 0.25ms 极微弱交流声
+AUDIO_EOF_MAGIC = b'\x01\x00\xff\xff\x01\x00\xff\xff'
+
 _LOW_LAT_QOS = QoSProfile(
     reliability=ReliabilityPolicy.BEST_EFFORT,
     history=HistoryPolicy.KEEP_LAST,
@@ -42,7 +47,7 @@ TOOLS = [
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["start", "stop", "speak", "info", "config"],
+                    "enum": ["start", "stop", "speak", "info", "config", "interrupt"],
                     "description": "Action to perform"
                 },
                 "input_topic": {
@@ -54,7 +59,14 @@ TOOLS = [
                     "description": "Text to synthesize (required for action=speak)"
                 },
             },
-            "required": ["action"]
+            "required": ["action"],
+            "x-completion": {
+                "actions": ["speak"],
+                "timeout": 60
+            },
+            "x-hooks": {
+                "on_interrupt_speak": {"action": "interrupt"},
+            }
         },
         "configSchema": {
             "type": "object",
@@ -165,6 +177,7 @@ class _TTSNode(Node):
         self._text_queue   = queue.Queue()
         self._worker_thread: Optional[threading.Thread] = None
         self._stop_event   = threading.Event()
+        self._interrupt_flag = threading.Event()  # 打断标志：设置后立即停止当前 utterance
         from audio_msgs.msg import AudioChunk
         self._pub = self.create_publisher(AudioChunk, self._output_topic, _LOW_LAT_QOS)
         self._perf_pub = self.create_publisher(String, '/perception/perf_spans', _LOW_LAT_QOS)
@@ -202,10 +215,53 @@ class _TTSNode(Node):
         self.state = "idle"
         return {"state": "idle"}
 
-    def enqueue(self, text: str, trace_id: str = ''):
+    def interrupt(self) -> dict:
+        """立即中止当前播放：清空队列 + 设置 interrupt flag 让 worker 停止当前 utterance。"""
+        # 清空待播放队列
+        cleared = 0
+        while not self._text_queue.empty():
+            try:
+                self._text_queue.get_nowait()
+                cleared += 1
+            except queue.Empty:
+                break
+        # 设置 interrupt flag（worker 在每个 frame 前检查）
+        self._interrupt_flag.set()
+        log.info(f"[tts] interrupted: cleared {cleared} queued item(s)")
+        return {"status": "interrupted", "cleared": cleared}
+
+    def enqueue(self, text: str, trace_id: str = '', action_id: str = ''):
         if self.state != "running":
             raise RuntimeError("TTS not running; call start first")
-        self._text_queue.put((text, trace_id))
+        # 分段：超过 280 字按标点切分，避免超长合成导致延迟或失败
+        segments = self._split_text(text, max_chars=280)
+        if len(segments) <= 1:
+            self._text_queue.put((text, trace_id, action_id))
+        else:
+            # 只有最后一段带 action_id（触发 ACP callback）
+            for i, seg in enumerate(segments):
+                is_last = (i == len(segments) - 1)
+                self._text_queue.put((seg, trace_id, action_id if is_last else ''))
+            log.info(f"[tts] split {len(text)} chars into {len(segments)} segments")
+
+    @staticmethod
+    def _split_text(text: str, max_chars: int = 280) -> list:
+        """按标点分段，每段不超过 max_chars 字。"""
+        import re as _re
+        sentences = _re.split(r'(?<=[。！？；\n])', text)
+        segments = []
+        current = ""
+        for sent in sentences:
+            if not sent:
+                continue
+            if len(current) + len(sent) > max_chars and current:
+                segments.append(current)
+                current = sent
+            else:
+                current += sent
+        if current:
+            segments.append(current)
+        return segments if segments else [text]
 
     def _text_cb(self, msg: String):
         if self.state != "running": return
@@ -230,11 +286,17 @@ class _TTSNode(Node):
                 item = self._text_queue.get(timeout=1)
             except queue.Empty:
                 continue
-            # Unpack queue item: (text, trace_id) or plain text for backward compat
+            # Unpack queue item: (text, trace_id, action_id) or legacy formats
             if isinstance(item, tuple):
-                text, _trace_id = item
+                if len(item) == 3:
+                    text, _trace_id, _action_id = item
+                elif len(item) == 2:
+                    text, _trace_id = item
+                    _action_id = ''
+                else:
+                    text, _trace_id, _action_id = str(item[0]), '', ''
             else:
-                text, _trace_id = item, ''
+                text, _trace_id, _action_id = item, '', ''
             try:
                 import time as _time
                 t_start = _time.monotonic()
@@ -247,7 +309,7 @@ class _TTSNode(Node):
                 prebuf = []   # pre-buffer queue
 
                 for raw_chunk in self._adapter.synthesize_stream(text):
-                    if self._stop_event.is_set():
+                    if self._stop_event.is_set() or self._interrupt_flag.is_set():
                         break
                     buf  += raw_chunk
                     total += len(raw_chunk)
@@ -256,6 +318,10 @@ class _TTSNode(Node):
                         frame = buf[:CHUNK_BYTES]
                         buf   = buf[CHUNK_BYTES:]
 
+                        # Check interrupt before publishing each frame
+                        if self._interrupt_flag.is_set():
+                            break
+
                         # Pre-buffer phase: accumulate a few frames before pacing
                         if t0 is None:
                             prebuf.append(frame)
@@ -263,6 +329,23 @@ class _TTSNode(Node):
                                 # Flush pre-buffer and start real-time clock
                                 t0 = _time.monotonic()
                                 t0_wall = _time.time()
+                                # Fire on_speaking hook (playback starting)
+                                try:
+                                    import urllib.request as _ureq
+                                    import json as _jhook
+                                    _hreq = _ureq.Request(
+                                        "https://localhost:15678/api/hooks/fire",
+                                        data=_jhook.dumps({"hook": "on_speaking"}).encode(),
+                                        headers={"Content-Type": "application/json"},
+                                        method="POST"
+                                    )
+                                    import ssl as _ssl
+                                    _sctx = _ssl.create_default_context()
+                                    _sctx.check_hostname = False
+                                    _sctx.verify_mode = _ssl.CERT_NONE
+                                    _ureq.urlopen(_hreq, timeout=2, context=_sctx)
+                                except Exception:
+                                    pass
                                 for pf in prebuf:
                                     msg = AudioChunk()
                                     msg.header.stamp = self.get_clock().now().to_msg()
@@ -286,7 +369,7 @@ class _TTSNode(Node):
                         frames_sent += 1
 
                 # Flush any remaining pre-buffer (short utterances < PREBUF_FRAMES)
-                if prebuf and not self._stop_event.is_set():
+                if prebuf and not self._stop_event.is_set() and not self._interrupt_flag.is_set():
                     t0 = _time.monotonic()
                     for pf in prebuf:
                         msg = AudioChunk()
@@ -297,7 +380,7 @@ class _TTSNode(Node):
                         frames_sent += 1
 
                 # flush remainder
-                if buf and not self._stop_event.is_set():
+                if buf and not self._stop_event.is_set() and not self._interrupt_flag.is_set():
                     if t0 is not None:
                         target = t0 + frames_sent * FRAME_DURATION
                         now = _time.monotonic()
@@ -308,7 +391,16 @@ class _TTSNode(Node):
                     msg.format = "audio/pcm-16k"
                     msg.data   = list(buf)
                     self._pub.publish(msg)
-                log.info(f"[tts] spoke {len(text)} chars → {total} bytes ({frames_sent} frames) in {_time.monotonic() - t_start:.2f}s")
+
+                # Clear interrupt flag after utterance is done (interrupted or complete)
+                if self._interrupt_flag.is_set():
+                    self._interrupt_flag.clear()
+                    log.info(f"[tts] utterance interrupted after {frames_sent} frames")
+                else:
+                    log.info(f"[tts] spoke {len(text)} chars → {total} bytes ({frames_sent} frames) in {_time.monotonic() - t_start:.2f}s")
+
+                # 发布 EOF 标记：告知下游 Speaker 当前 utterance 已结束
+                self._publish_eof()
                 # 上报 TTS perf spans（生成 + 播放）
                 try:
                     import json as _json
@@ -335,6 +427,42 @@ class _TTSNode(Node):
                         self._perf_pub.publish(perf_msg)
                 except Exception:
                     pass
+
+                # ACP: 推送动作完成回调到 Agent Core
+                # Also fire on_idle hook (LED off immediately after playback)
+                if _action_id:
+                    try:
+                        import urllib.request as _urllib
+                        import ssl as _ssl
+                        import os as _os
+                        _agent_core_url = _os.environ.get("AGENT_CORE_URL", "https://localhost:15678")
+                        _ctx = _ssl.create_default_context()
+                        _ctx.check_hostname = False
+                        _ctx.verify_mode = _ssl.CERT_NONE
+                        # Fire on_idle to turn off LED
+                        _idle_req = _urllib.Request(
+                            f"{_agent_core_url}/api/hooks/fire",
+                            data=json.dumps({"hook": "on_idle"}).encode(),
+                            headers={"Content-Type": "application/json"},
+                            method="POST"
+                        )
+                        _urllib.urlopen(_idle_req, timeout=2, context=_ctx)
+                        was_interrupted = self._interrupt_flag.is_set()
+                        _payload = json.dumps({
+                            "action_id": _action_id,
+                            "status": "cancelled" if was_interrupted else "completed",
+                            "result": {"text": text[:100], "frames": frames_sent},
+                        }).encode()
+                        _req = _urllib.Request(
+                            f"{_agent_core_url}/api/acp/complete",
+                            data=_payload,
+                            headers={"Content-Type": "application/json"},
+                            method="POST",
+                        )
+                        _urllib.urlopen(_req, timeout=3, context=_ctx)
+                        log.info(f"[tts] ACP complete: {_action_id} ({'cancelled' if was_interrupted else 'completed'})")
+                    except Exception as e:
+                        log.warning(f"[tts] ACP callback failed: {e}")
             except Exception as e:
                 log.error(f"[tts] synthesis error: {e}", exc_info=True)
 
@@ -344,6 +472,15 @@ class _TTSNode(Node):
             "topic_in":  [{"topic": self._input_topic,  "format": "data/json",     "desc": "text to synthesize"}],
             "topic_out": [{"topic": self._output_topic, "format": "audio/pcm-16k", "desc": "synthesized PCM audio"}],
         }
+
+    def _publish_eof(self):
+        """发布 EOF magic chunk，标记当前 utterance 结束。"""
+        from audio_msgs.msg import AudioChunk
+        msg = AudioChunk()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.format = "audio/pcm-16k"
+        msg.data = list(AUDIO_EOF_MAGIC)
+        self._pub.publish(msg)
 
 
 # ── Plugin ────────────────────────────────────────────────────────────────────
@@ -504,8 +641,11 @@ class TTSPlugin:
                     node = self._nodes[node_key]
                 if node.state != "running":
                     node.start()
-            node.enqueue(text, trace_id=args.get('_trace_id', ''))
-            return {"status": "queued", "text": text}
+            # ACP: 生成 action_id
+            import uuid as _uuid
+            action_id = f"speak-{_uuid.uuid4().hex[:8]}"
+            node.enqueue(text, trace_id=args.get('_trace_id', ''), action_id=action_id)
+            return {"status": "queued", "action_id": action_id, "text": text}
 
         elif action == "config":
             cfg = {k: v for k, v in args.items() if k not in ('action', 'instance_id') and v}
@@ -521,6 +661,22 @@ class TTSPlugin:
                 self._executor.remove_node(self._nodes[key])
                 del self._nodes[key]
             return {"status": "configured"}
+
+        elif action == "interrupt":
+            # 立即中止所有 TTS 播放（清空队列 + 停止当前 utterance）
+            total_cleared = 0
+            interrupted_count = 0
+            if instance_id and instance_id in self._nodes:
+                result = self._nodes[instance_id].interrupt()
+                total_cleared += result.get('cleared', 0)
+                interrupted_count += 1
+            elif not instance_id:
+                for node in self._nodes.values():
+                    if node.state == "running":
+                        result = node.interrupt()
+                        total_cleared += result.get('cleared', 0)
+                        interrupted_count += 1
+            return {"status": "interrupted", "nodes": interrupted_count, "cleared": total_cleared}
 
         return None
 

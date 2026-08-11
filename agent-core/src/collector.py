@@ -2,10 +2,13 @@
 collector.py — 双队列事件收集器。
 
 架构：
-  - P>0 事件（ASR/message/channel）→ 立即送 main agent，或 busy 时暂存等 turn 结束
+  - P>0 事件（ASR/message/channel）→ 立即送 main agent，或 busy 时按模式处理：
+    - steer: 推入 steering_queue，agent loop 在 tool batch 间消费
+    - interrupt: 触发 cancel_event，中止当前 turn
+    - followup: 暂存 _priority_pending，等 turn 结束后 drain
   - P=0 事件（sensor/scheduler 等）→ 独立节奏送 bg subagent，main agent 永远不看到
   - Ring buffer 保留所有事件（供 raw_input_info 按需查询）
-  - 支持 cancel_event 信号（仅 P>P_current 时 cancel）
+  - 语音 barge-in 检测：ASR 事件 duration_ms < 阈值时视为 backchannel 丢弃
 """
 
 import asyncio
@@ -19,8 +22,9 @@ import event_bus
 
 
 # ── P>0 管道 ─────────────────────────────────────────────────────────────────
-_priority_pending: deque = deque()   # P>0 事件（busy 时暂存）
+_priority_pending: deque = deque()   # P>0 事件（followup 模式：busy 时暂存）
 _output: asyncio.Queue = asyncio.Queue(maxsize=64)  # main agent 消费端
+_steering_queue: asyncio.Queue = asyncio.Queue(maxsize=32)  # steer 模式：busy 时推入
 
 # ── P=0 管道 ─────────────────────────────────────────────────────────────────
 _bg_buffer: deque = deque()          # P=0 事件（按节奏送 bg subagent）
@@ -34,7 +38,12 @@ _current_turn_priority: int = 0
 _source_ring: dict[str, deque] = {}  # per-source ring buffer（所有事件）
 
 # 优先级判定规则
-_PRIORITY_SOURCES = {'asr', 'message', 'channel', 'subagent'}
+_PRIORITY_SOURCES = {'asr', 'message', 'channel', 'subagent', 'acp', 'scheduler'}
+
+# 打断模式：steer(默认) | interrupt | followup
+_interrupt_mode: str = "steer"
+# barge-in 阈值（ms），ASR 事件 duration_ms 低于此值时视为 backchannel 丢弃
+_barge_in_threshold_ms: int = 500
 
 
 def _extract_priority(ev: dict) -> int:
@@ -46,8 +55,20 @@ def _extract_priority(ev: dict) -> int:
             p = data.get('priority')
             if p is not None:
                 return int(p)
+            # ACP: action_complete 事件自动为 P>0（需要 steering 注入 LLM turn）
+            if data.get('type') == 'action_complete':
+                return 1
         except (ValueError, TypeError):
             pass
+    # ACP: payload 中的 action_complete 也处理
+    payload = ev.get('payload', {})
+    if isinstance(payload, dict):
+        if payload.get('type') == 'action_complete':
+            return 1
+        # Subagent 完成事件：继承 subagent 的 priority（反转映射回 event priority）
+        sub_p = payload.get('priority')
+        if sub_p is not None:
+            return max(1, 3 - int(sub_p))  # sub P=0(紧急) → event P=3, sub P=2 → event P=1
     source = ev.get('source', '').lower()
     for key in _PRIORITY_SOURCES:
         if key in source:
@@ -87,8 +108,9 @@ def set_busy(busy: bool):
     """由 agent loop 调用：标记当前是否正在执行 turn。"""
     global _busy
     _busy = busy
-    if not busy and _priority_pending:
-        asyncio.ensure_future(_emit_priority())
+    if not busy:
+        # turn 结束时立即排空所有 pending 队列，避免消息跨 turn 滞留
+        _flush_all_pending()
 
 
 def set_cancel_event(ev: asyncio.Event | None):
@@ -103,8 +125,39 @@ def set_turn_priority(priority: int):
     _current_turn_priority = priority
 
 
+def set_interrupt_mode(mode: str):
+    """设置打断模式：steer | interrupt | followup。"""
+    global _interrupt_mode
+    if mode in ('steer', 'interrupt', 'followup'):
+        _interrupt_mode = mode
+
+
+def set_barge_in_threshold(ms: int):
+    """设置 barge-in 阈值（毫秒）。"""
+    global _barge_in_threshold_ms
+    _barge_in_threshold_ms = max(0, ms)
+
+
+def get_interrupt_mode() -> str:
+    """返回当前打断模式。"""
+    return _interrupt_mode
+
+
+async def drain_steering() -> list[dict]:
+    """非阻塞地 drain steering_queue 中的所有待处理消息。由 agent loop 在 tool batch 间调用。"""
+    items = []
+    while not _steering_queue.empty():
+        try:
+            items.append(_steering_queue.get_nowait())
+        except asyncio.QueueEmpty:
+            break
+    return items
+
+
 async def next_trigger() -> dict:
     """阻塞等待下一批 P>0 事件（main agent 消费端）。"""
+    # Fallback: 每次等待前再检查一次 pending 队列，防止遗漏
+    _flush_all_pending()
     return await _output.get()
 
 
@@ -122,6 +175,39 @@ def get_available_sources() -> list[str]:
 
 
 # ── 内部：P>0 管道 ────────────────────────────────────────────────────────────
+
+def _flush_all_pending():
+    """同步排空 _steering_queue 和 _priority_pending 到 _output。
+    在 turn 结束时和 next_trigger 前调用，确保消息不跨 turn 滞留。"""
+    # 先把 steering_queue 里的消息移到 _priority_pending
+    while not _steering_queue.empty():
+        try:
+            _priority_pending.append(_steering_queue.get_nowait())
+        except asyncio.QueueEmpty:
+            break
+    # 再把 _priority_pending 全部 emit 到 _output
+    if _priority_pending:
+        batch = list(_priority_pending)
+        _priority_pending.clear()
+        # 同步放入 _output（非 async，避免 fire-and-forget 丢失）
+        formatted = _format_priority_batch(batch)
+        trigger = {
+            'source': 'collector',
+            'text': formatted,
+            'payload': {'event_count': len(batch), 'sources': [e['source'] for e in batch]},
+            'ts': batch[-1]['ts'],
+            '_perf_trigger_emit_ts': time.time(),
+            '_urgent': True,
+        }
+        for ev in reversed(batch):
+            if '_perf_spans' in ev:
+                trigger['_perf_spans'] = ev['_perf_spans']
+                break
+        try:
+            _output.put_nowait(trigger)
+        except asyncio.QueueFull:
+            print('[collector] WARNING: _output queue full, pending messages dropped')
+
 
 async def _emit_priority():
     """busy 结束后，立即 emit 暂存的 P>0 事件。"""
@@ -297,6 +383,19 @@ async def _drain_loop():
         _extract_perf_timestamps(ev)
         priority = _extract_priority(ev)
 
+        # KWS wake-word hook (fires regardless of busy state)
+        if 'asr' in source.lower():
+            payload = ev.get('payload', {})
+            if isinstance(payload, str):
+                try:
+                    import json as _json
+                    payload = _json.loads(payload)
+                except Exception:
+                    payload = {}
+            if payload.get('kws_triggered'):
+                import hooks
+                asyncio.create_task(hooks.fire('on_kws_wakeup'))
+
         # Ring buffer 始终存储（所有事件，供 raw_input_info 查询）
         if source not in _source_ring:
             _source_ring[source] = deque(maxlen=ring_size)
@@ -307,9 +406,39 @@ async def _drain_loop():
             if not _busy:
                 await _emit_batch([ev], urgent=True)
             else:
-                _priority_pending.append(ev)
-                if priority > _current_turn_priority and _cancel_event:
-                    _cancel_event.set()
+                # Barge-in 检测：ASR 事件 duration 不足时视为 backchannel，丢弃
+                if 'asr' in source.lower() and _barge_in_threshold_ms > 0:
+                    duration_ms = ev.get('payload', {}).get('duration_ms', 0)
+                    if 0 < duration_ms < _barge_in_threshold_ms:
+                        continue  # backchannel，不打断
+
+                # 按模式处理
+                if _interrupt_mode == 'steer':
+                    # Scheduler 去重：如果 steering_queue 中已有相同 source 的 scheduler 事件，跳过
+                    if 'scheduler:' in source.lower():
+                        _dedup = False
+                        for item in list(_steering_queue._queue):
+                            if item.get('source', '') == ev.get('source', ''):
+                                _dedup = True
+                                break
+                        if _dedup:
+                            continue  # 已有相同 task 的 check 事件，跳过
+                    # Steer: 推入 steering_queue，agent loop 在 tool batch 间消费
+                    try:
+                        _steering_queue.put_nowait(ev)
+                    except asyncio.QueueFull:
+                        # queue 满时退化为 followup
+                        _priority_pending.append(ev)
+                elif _interrupt_mode == 'interrupt':
+                    # Interrupt: 缓存事件并触发 cancel
+                    _priority_pending.append(ev)
+                    if _cancel_event:
+                        _cancel_event.set()
+                else:
+                    # Followup: 暂存，等 turn 结束后 drain（原有行为）
+                    _priority_pending.append(ev)
+                    if priority > _current_turn_priority and _cancel_event:
+                        _cancel_event.set()
         else:
             # ── P=0: 送 bg buffer ──
             _bg_buffer_add(ev)
@@ -329,7 +458,14 @@ async def _bg_trigger_loop():
 
 def start():
     """启动 collector 后台任务。"""
+    # 从配置加载打断模式和 barge-in 阈值
+    event_cfg = config.main.get('event', {}).get('llm', {})
+    mode = event_cfg.get('interrupt_mode', 'steer')
+    set_interrupt_mode(mode)
+    threshold = event_cfg.get('barge_in_threshold_ms', 500)
+    set_barge_in_threshold(threshold)
+
     asyncio.ensure_future(_drain_loop())
     asyncio.ensure_future(_bg_trigger_loop())
-    interval = config.main.get('event', {}).get('llm', {}).get('trigger_interval_ms', 1000)
-    print(f'[collector] started: dual-queue mode, bg_interval={interval}ms')
+    interval = event_cfg.get('trigger_interval_ms', 1000)
+    print(f'[collector] started: dual-queue mode, bg_interval={interval}ms, interrupt_mode={_interrupt_mode}, barge_in={_barge_in_threshold_ms}ms')

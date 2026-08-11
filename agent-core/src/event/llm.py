@@ -190,6 +190,86 @@ async def _compress_turns(turns: list[list[dict]]) -> str:
         return f'[历史摘要] 之前有 {len(turns)} 轮对话，因压缩失败仅保留最近内容。'
 
 
+# ── Tiered Retention helpers ──────────────────────────────────────────────────
+
+def _degrade_turn(turn: list[dict]) -> list[dict]:
+    """降质 turn：tool results 截短，tool_calls 只留名称列表。用于 tier2 历史。"""
+    degraded = []
+    for msg in turn:
+        if msg.get('role') == 'tool':
+            content = msg.get('content', '')
+            if isinstance(content, str) and len(content) > 80:
+                msg = {**msg, 'content': content[:80] + '...'}
+            elif isinstance(content, list):
+                msg = {**msg, 'content': '(多模态内容已省略)'}
+        elif msg.get('role') == 'assistant' and msg.get('tool_calls'):
+            names = [tc['function']['name'] for tc in msg['tool_calls']]
+            text = msg.get('content', '') or ''
+            msg = {'role': 'assistant', 'content': (text + '\n[调用: ' + ', '.join(names) + ']').strip()}
+        degraded.append(msg)
+    return degraded
+
+
+def _compact_turn_messages(turn_messages: list[dict], keep_recent: int = 12) -> None:
+    """Turn 内 compaction：保留最近 keep_recent 条完整，早期消息的 tool results 截短。
+    直接修改 turn_messages（in-place）。"""
+    if len(turn_messages) <= keep_recent:
+        return
+    # 只压缩 [0 : -keep_recent] 范围内的消息
+    compact_end = len(turn_messages) - keep_recent
+    for i in range(compact_end):
+        msg = turn_messages[i]
+        if msg.get('role') == 'tool':
+            content = msg.get('content', '')
+            if isinstance(content, str) and len(content) > 150:
+                turn_messages[i] = {**msg, 'content': content[:150] + '...(compacted)'}
+            elif isinstance(content, list):
+                turn_messages[i] = {**msg, 'content': '(多模态内容已省略)'}
+        elif msg.get('role') == 'assistant' and msg.get('tool_calls'):
+            # 保留 tool_calls 结构（API 需要），但截短 arguments
+            new_calls = []
+            for tc in msg['tool_calls']:
+                args = tc.get('function', {}).get('arguments', '')
+                if len(args) > 100:
+                    new_tc = {**tc, 'function': {**tc['function'], 'arguments': args[:100] + '...'}}
+                else:
+                    new_tc = tc
+                new_calls.append(new_tc)
+            turn_messages[i] = {**msg, 'tool_calls': new_calls}
+
+
+_REWRITE_SUMMARY_PROMPT = """将以下两段历史摘要合并为一段简洁摘要。
+要求：保留活跃任务、关键决策、未完成事项。去除已完成/过时的细节。
+最终控制在 {budget} 字以内，以「[历史摘要]」开头。
+
+旧摘要：
+{old}
+
+新摘要：
+{new}
+"""
+
+
+async def _rewrite_summary(old: str, new: str, budget: int = 5000) -> str:
+    """合并两段摘要为固定预算内的单一摘要。"""
+    try:
+        resp = await client.call(
+            message_list=[
+                {'role': 'system', 'content': '你是高效的信息压缩器。'},
+                {'role': 'user', 'content': _REWRITE_SUMMARY_PROMPT.format(budget=budget, old=old, new=new)},
+            ],
+            tool_list=[],
+        )
+        result = resp.get('content', '') or new
+        # 硬上限兜底
+        if len(result) > budget * 2:
+            result = result[:budget * 2]
+        return result
+    except Exception as e:
+        print(f'[decision] rewrite_summary failed: {e}')
+        return new  # 失败时只保留新摘要
+
+
 # ── detailed_info 系统工具实现 ────────────────────────────────────────────────────
 
 import datetime as _dt
@@ -239,20 +319,25 @@ async def _memory_recall(
     if source in ('all', 'subagent'):
         try:
             with _get_conn() as conn:
+                # 分词搜索：将 query 按空格拆分，每个关键词都必须匹配（AND 逻辑）
+                keywords = [k.strip() for k in query.split() if k.strip()]
+                if not keywords:
+                    keywords = [query]
+                where_clauses = ' AND '.join(['(conclusion LIKE ? OR goal LIKE ?)'] * len(keywords))
+                params = []
+                for kw in keywords:
+                    params.extend([f'%{kw}%', f'%{kw}%'])
                 if time_cutoff > 0:
-                    rows = conn.execute(
-                        'SELECT agent_id, goal, conclusion, source_type, created_at '
-                        'FROM subagent_conclusions WHERE conclusion LIKE ? AND created_at > ? '
-                        'ORDER BY created_at DESC LIMIT ?',
-                        (f'%{query}%', time_cutoff, limit)
-                    ).fetchall()
+                    sql = (f'SELECT agent_id, goal, conclusion, source_type, created_at '
+                           f'FROM subagent_conclusions WHERE ({where_clauses}) AND created_at > ? '
+                           f'ORDER BY created_at DESC LIMIT ?')
+                    params.extend([time_cutoff, limit])
                 else:
-                    rows = conn.execute(
-                        'SELECT agent_id, goal, conclusion, source_type, created_at '
-                        'FROM subagent_conclusions WHERE conclusion LIKE ? '
-                        'ORDER BY created_at DESC LIMIT ?',
-                        (f'%{query}%', limit)
-                    ).fetchall()
+                    sql = (f'SELECT agent_id, goal, conclusion, source_type, created_at '
+                           f'FROM subagent_conclusions WHERE ({where_clauses}) '
+                           f'ORDER BY created_at DESC LIMIT ?')
+                    params.append(limit)
+                rows = conn.execute(sql, params).fetchall()
                 for agent_id, goal, conclusion, source_type, ts in rows:
                     time_str = _dt.datetime.fromtimestamp(ts).strftime('%m-%d %H:%M')
                     results.append({
@@ -377,6 +462,7 @@ class Event:
         self._session_id: str | None  = None  # chat history session
         self._current_turn: list[dict] = []   # 当前轮消息（供 run_forever 保存）
         self._subagent_mgr = None             # SubagentManager instance
+        self._bound_instance_ids: dict = {}   # full_name → card_id (canvas binding)
 
     async def __aenter__(self):
         global _event_instance
@@ -463,11 +549,13 @@ class Event:
 
         # 从 executor connections 直接收集绑定的工具 schemas
         schemas = []
+        self._bound_instance_ids = {}  # full_name → card_id (for multiInstance tools)
         for ec in exec_conns:
             if ec.get('fromCardId') not in core_card_ids:
                 continue
             mcp_id = ec.get('toMcpId', '')
             tool_name = ec.get('toToolName', '')
+            card_id = ec.get('toCardId', '')
             if not mcp_id or not tool_name:
                 continue
             # 从 mcp_client registry 中取该工具的 schema
@@ -475,6 +563,8 @@ class Event:
             if not info or not info.get('online'):
                 continue
             full_name = f"mcp__{mcp_id}__{tool_name}"
+            if card_id:
+                self._bound_instance_ids[full_name] = card_id
             schema = info.get('schemas', {}).get(full_name)
             if schema:
                 schemas.append(schema)
@@ -484,12 +574,49 @@ class Event:
                     s = info.get('schemas', {}).get(split_name)
                     if s:
                         schemas.append(s)
+                        if card_id:
+                            self._bound_instance_ids[split_name] = card_id
 
         if not schemas:
             # 没有绑定任何工具时，仅使用系统工具（不暴露全部 MCP 工具）
             return []
 
         return schemas
+
+    # ── 打断：中止正在进行的输出 ─────────────────────────────────────────────
+
+    async def _interrupt_active_outputs(self):
+        """中止所有正在进行的输出（TTS + 动作）。在 TurnCancelled 时调用。
+        优先使用 hook 系统；fallback 到硬编码查找。"""
+        import hooks
+        results = await hooks.fire('on_interrupt_all')
+        if results:
+            # Hook handled it — also clear pending ACP
+            for aid in list(mcp_client._pending_actions.keys()):
+                mcp_client._pending_actions[aid].set()
+            print(f'[decision] interrupted via on_interrupt_all hook ({len(results)} binding(s))')
+            return
+
+        # Fallback: hardcoded lookup (no hook registered)
+        tasks = []
+        for mcp_id, info in mcp_client.registry.items():
+            tools = info.get('tools', [])
+            for t in tools:
+                short_name = t.split('__')[-1] if '__' in t else t
+                if short_name == 'tts':
+                    tasks.append(mcp_client.call_tool(t, {'action': 'interrupt'}))
+                    break
+            for t in tools:
+                short_name = t.split('__')[-1] if '__' in t else t
+                if short_name == 'loco':
+                    tasks.append(mcp_client.call_tool(t, {'action': 'stop_move'}))
+                    break
+        if tasks:
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            for i, r in enumerate(results):
+                if isinstance(r, Exception):
+                    print(f'[decision] interrupt_active_outputs: task {i} failed: {r}')
+            print(f'[decision] interrupted {len(tasks)} active output(s) (fallback)')
 
     # ── 主循环 ───────────────────────────────────────────────────────────────
 
@@ -511,11 +638,16 @@ class Event:
                     'role': 'assistant',
                     'content': '[turn interrupted by user message]',
                 })
+                # 中止正在进行的 TTS 播放和动作
+                await self._interrupt_active_outputs()
                 await push_event({'type': 'turn_cancelled', 'payload': {}})
             except asyncio.CancelledError:
                 raise
             except Exception as e:
                 print(f'[decision] error in _one_turn: {e}')
+                # Fire on_error hook (LED feedback etc.)
+                import hooks
+                asyncio.create_task(hooks.fire('on_error'))
                 # 把错误也记入本轮消息
                 self._current_turn.append({
                     'role': 'assistant',
@@ -525,6 +657,9 @@ class Event:
             finally:
                 collector.set_cancel_event(None)
                 collector.set_busy(False)
+                # Fire on_idle hook (LED state reset etc.)
+                import hooks as _hooks_idle
+                asyncio.create_task(_hooks_idle.fire('on_idle'))
                 # 无论成功失败，只要有消息就持久化
                 if self._current_turn:
                     self._save_current_turn(ev)
@@ -532,6 +667,16 @@ class Event:
     def _save_current_turn(self, trigger_event: dict):
         """保存 _current_turn 到内存历史 + SQLite。"""
         turn = self._current_turn
+        # 保存前 compact：截断大 tool results，减少 tier1 历史占用
+        llm_cfg = config.main.get('event', {}).get('llm', {})
+        save_compact_limit = llm_cfg.get('save_compact_chars', 500)
+        for i, msg in enumerate(turn):
+            if msg.get('role') == 'tool':
+                content = msg.get('content', '')
+                if isinstance(content, str) and len(content) > save_compact_limit:
+                    turn[i] = {**msg, 'content': content[:save_compact_limit] + '...(trimmed)'}
+                elif isinstance(content, list):
+                    turn[i] = {**msg, 'content': '(多模态内容已省略)'}
         self._turns.append(turn)
         # 持久化（延迟创建 session）
         import chat_history
@@ -544,47 +689,65 @@ class Event:
                 chat_history.update_summary(self._session_id, summary_text)
         except Exception as e:
             print(f'[chat_history] save_turn failed: {e}')
-        # 裁剪
-        max_turns = config.main.get('event', {}).get('llm', {}).get('history_turns', 30)
+        # 裁剪：保留 tier1 + tier2 + 少量缓冲（压缩在 _maybe_compress 中处理）
+        llm_cfg = config.main.get('event', {}).get('llm', {})
+        tier1 = llm_cfg.get('tier1_turns', 6)
+        tier2 = llm_cfg.get('tier2_turns', 8)
+        max_turns = llm_cfg.get('history_turns', tier1 + tier2 + 4)
         if len(self._turns) > max_turns:
             self._turns = self._turns[-max_turns:]
 
     # ── 单轮推理 ─────────────────────────────────────────────────────────────
 
     def _build_history(self) -> list[dict]:
-        """从 _turns 构建 L3 历史（取最近 N 轮 flatten）。若有摘要则前置。"""
-        max_turns = config.main.get('event', {}).get('llm', {}).get('history_turns', 30)
-        recent_turns = self._turns[-max_turns:] if len(self._turns) > max_turns else self._turns
+        """从 _turns 构建 L3 历史（tiered retention: tier1 全量 + tier2 降质 + summary）。"""
+        llm_cfg = config.main.get('event', {}).get('llm', {})
+        tier1 = llm_cfg.get('tier1_turns', 6)
+        tier2 = llm_cfg.get('tier2_turns', 8)
+
+        n = len(self._turns)
+        recent = self._turns[-tier1:] if n > tier1 else self._turns
+        medium = self._turns[max(0, n - tier1 - tier2):max(0, n - tier1)]
+
         history = []
         # 前置历史摘要（如果有）
         if self._summary:
             history.append({'role': 'user', 'content': self._summary})
             history.append({'role': 'assistant', 'content': '好的，我已了解之前的对话背景。'})
-        for turn in recent_turns:
+        for turn in medium:
+            history.extend(_degrade_turn(turn))
+        for turn in recent:
             history.extend(turn)
         return _sanitize(history)
 
     async def _maybe_compress(self):
-        """检查历史是否超过阈值，如果是则压缩旧轮次为摘要。"""
+        """检查历史是否需要压缩（基于轮数或字符数），压缩旧轮次为 rolling summary。"""
         llm_cfg = config.main.get('event', {}).get('llm', {})
+        tier1 = llm_cfg.get('tier1_turns', 6)
+        tier2 = llm_cfg.get('tier2_turns', 8)
+        max_kept = tier1 + tier2
         threshold = llm_cfg.get('compress_threshold_chars', 80000)
-        keep_recent = llm_cfg.get('compress_keep_recent', 6)
+        summary_budget = llm_cfg.get('summary_max_chars', 5000)
 
-        total_chars = _estimate_chars(self._turns)
-        if total_chars <= threshold:
+        # 触发条件1: 轮数超限
+        need_compress = len(self._turns) > max_kept + 2
+        # 触发条件2: 字符超限（兜底）
+        if not need_compress:
+            need_compress = _estimate_chars(self._turns) > threshold
+        if not need_compress:
             return
-        if len(self._turns) <= keep_recent:
+        if len(self._turns) <= max_kept:
             return  # 不够分割，跳过
 
         # 分割：压缩旧的，保留最近的
-        old_turns = self._turns[:-keep_recent]
-        recent_turns = self._turns[-keep_recent:]
+        old_turns = self._turns[:-max_kept]
+        recent_turns = self._turns[-max_kept:]
 
-        print(f'[decision] compressing history: {len(old_turns)} old turns ({total_chars} chars > {threshold} threshold)')
+        print(f'[decision] compressing history: {len(old_turns)} old turns, keeping {max_kept} recent')
         summary = await _compress_turns(old_turns)
-        # 合并旧摘要
+        # Rolling summary: 合并旧摘要（固定预算重写，而非无限拼接）
         if self._summary:
-            summary = self._summary + '\n\n' + summary
+            summary = await _rewrite_summary(self._summary, summary, summary_budget)
 
         self._summary = summary
         self._turns = recent_turns
@@ -620,6 +783,10 @@ class Event:
         # Log incoming event
         _urgent_tag = ' [URGENT]' if trigger_event.get('_urgent') else ''
         print(f'[decision] received{_urgent_tag} event: source={trigger_event.get("source", "?")} text={trigger_event.get("text", "")[:300]}')
+
+        # Fire on_thinking hook (non-blocking LED feedback etc.)
+        import hooks
+        asyncio.create_task(hooks.fire('on_thinking'))
         # Subagent status in log
         if self._subagent_mgr:
             _sa_active = self._subagent_mgr.list_active()
@@ -673,6 +840,13 @@ class Event:
                 round_idx = 0
                 print(f'[decision] hit max_rounds={max_rounds}, truncated turn_messages to {len(turn_messages)}, continuing')
                 await push_event({'type': 'turn_truncated', 'payload': {'kept': len(turn_messages), 'total_rounds': total_rounds}})
+
+            # ── Turn 内 compaction：消息过多时压缩早期 tool results ────────────
+            compact_threshold = llm_cfg.get('turn_compact_threshold', 30)
+            compact_keep_recent = llm_cfg.get('turn_compact_keep_recent', 12)
+            if len(turn_messages) > compact_threshold:
+                _compact_turn_messages(turn_messages, compact_keep_recent)
+
             # ── 构建分层 prompt ────────────────────────────────────────────
             history = self._build_history()
             # 本轮已产生的消息也要加入历史（多轮工具调用场景）
@@ -740,7 +914,11 @@ class Event:
                     if len(self._turns) > 2:
                         old = self._turns[:-2]
                         summary = await _compress_turns(old)
-                        self._summary = (self._summary + '\n\n' + summary) if self._summary else summary
+                        if self._summary:
+                            llm_cfg = config.main.get('event', {}).get('llm', {})
+                            budget = llm_cfg.get('summary_max_chars', 5000)
+                            summary = await _rewrite_summary(self._summary, summary, budget)
+                        self._summary = summary
                         self._turns = self._turns[-2:]
                         # 重建 history 并重试（复用冻结的 system）
                         history = self._build_history()
@@ -789,14 +967,43 @@ class Event:
             # ── 用量广播 ──────────────────────────────────────────────────
             _usage = response.get('_usage')
             if _usage:
-                _turn_usage['prompt_tokens'] += _usage.get('prompt_tokens', 0)
-                _turn_usage['completion_tokens'] += _usage.get('completion_tokens', 0)
-                _turn_usage['total_tokens'] += _usage.get('total_tokens', 0)
-                _turn_usage['cached_tokens'] += _usage.get('cached_tokens', 0)
+                _turn_usage['prompt_tokens'] += _usage.get('prompt_tokens') or 0
+                _turn_usage['completion_tokens'] += _usage.get('completion_tokens') or 0
+                _turn_usage['total_tokens'] += _usage.get('total_tokens') or 0
+                _turn_usage['cached_tokens'] += _usage.get('cached_tokens') or 0
                 await push_event({'type': 'llm_usage', 'payload': _usage})
 
             # ── 工具调用 ──────────────────────────────────────────────────
             tool_calls = response.get('tool_calls') or []
+
+            def _needs_barrier(name: str, call_args: dict = None) -> bool:
+                """actuator/processor 类型的 MCP 工具需要 ACP barrier。
+                例外：在 on_interrupt_* hook 中注册的 tool+action 免 barrier。"""
+                if not name.startswith('mcp__'):
+                    return False
+                parts = name.split('__')
+                mcp_id = parts[1] if len(parts) > 1 else ''
+                # 从 split_map 获取原始 tool name + action
+                entry = mcp_client.registry.get(mcp_id)
+                if not entry:
+                    return False
+                split_info = entry.get('split_map', {}).get(name, {})
+                if split_info:
+                    # Split tool: action is encoded in schema name
+                    tool_name = split_info.get('tool', '')
+                    action_name = split_info.get('action', '')
+                else:
+                    # Non-split tool: action comes from call args
+                    tool_name = parts[-1] if len(parts) > 2 else ''
+                    action_name = (call_args or {}).get('action', '')
+                # 在 interrupt hook 中注册的 → 免 barrier
+                import hooks
+                if hooks.is_interrupt_binding(mcp_id, tool_name, action_name):
+                    return False
+                meta = entry.get('tool_meta', {}).get(name)
+                if not meta:
+                    return True  # 无 meta 默认 barrier（安全）
+                return meta.get('type') not in ('sensor', 'resource')
 
             async def _dispatch(call: dict) -> dict:
                 name   = call['function']['name']
@@ -815,8 +1022,36 @@ class Event:
                 if name in self._sys_tools:
                     result = await self._sys_tools[name]['object'](**args)
                 elif name.startswith('mcp__'):
+                    # ACP barrier: 有 pending 时，非 sensor/resource 工具等待所有 pending 完成
+                    if mcp_client.get_pending_actions() and _needs_barrier(name, args):
+                        await mcp_client.await_pending(cancel_event, timeout=120)
                     args['_trace_id'] = _trace_id
+                    args['_cancel_event'] = cancel_event
+                    # Inject instance_id from canvas binding (multiInstance tools need it)
+                    if name in self._bound_instance_ids and 'instance_id' not in args:
+                        args['instance_id'] = self._bound_instance_ids[name]
                     result = await mcp_client.call_tool(name, args)
+                    # interrupt hook 绑定的工具执行后：清 pending + 通知其他绑定方
+                    if not _needs_barrier(name, args) and mcp_client.get_pending_actions():
+                        import hooks as _hooks
+                        parts = name.split('__')
+                        _mcp_id = parts[1] if len(parts) > 1 else ''
+                        _entry = mcp_client.registry.get(_mcp_id, {})
+                        _split = _entry.get('split_map', {}).get(name, {})
+                        _tool = _split.get('tool', parts[-1] if len(parts) > 2 else '')
+                        _act = _split.get('action', args.get('action', ''))
+                        if _hooks.is_interrupt_binding(_mcp_id, _tool, _act):
+                            for aid in list(mcp_client._pending_actions.keys()):
+                                mcp_client._pending_results[aid] = {
+                                    "status": "cancelled",
+                                    "reason": "interrupted by user instruction",
+                                }
+                                mcp_client._pending_actions[aid].set()
+                            # Fire hook to notify ALL registered parties (e.g. perception TTS)
+                            _hook_id = _hooks.get_hook_for_binding(_mcp_id, _tool, _act)
+                            if _hook_id:
+                                asyncio.create_task(_hooks.fire(_hook_id, exclude_mcp_id=_mcp_id))
+                            print(f'[acp] interrupt: cancelled pending + fired {_hook_id} (source: {_tool}.{_act})')
                 else:
                     result = f'未知工具: {name}'
 
@@ -891,6 +1126,22 @@ class Event:
             skill_tools = {'activate_skill', 'deactivate_skill'}
             if any(c['function']['name'] in skill_tools for c in tool_calls):
                 frozen_system = prompt_mod.build_system(mcp_client.registry, bound_tool_names)
+
+            # ── Steering: 检查是否有用户消息需要注入 ─────────────────────────
+            steered = await collector.drain_steering()
+            if steered:
+                for sev in steered:
+                    s_text = sev.get('text', '')
+                    s_source = sev.get('source', '')
+                    turn_messages.append({
+                        'role': 'user',
+                        'content': f'[system notification source={s_source}]\n{s_text}',
+                    })
+                await push_event({'type': 'turn_steered', 'payload': {
+                    'count': len(steered),
+                    'sources': [s.get('source', '') for s in steered],
+                }})
+                print(f'[decision] steered {len(steered)} user message(s) into current turn')
 
             # ── 取消检查点：工具执行完毕后，下一轮 LLM 调用前 ────────────────
             if cancel_event and cancel_event.is_set():
