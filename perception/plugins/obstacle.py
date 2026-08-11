@@ -493,6 +493,11 @@ class _ObstacleNode(Node):
             if self.state == "running":
                 return {"state": "running", "input": self._input_topic, "output": self._output_topic}
             if self._worker is not None and self._worker.is_alive():
+                # A previous stop() may have timed out while the worker was in
+                # a long inference.  Give it a short grace period to finish
+                # instead of poisoning every later start from the judge.
+                self._worker.join(timeout=5.0)
+            if self._worker is not None and self._worker.is_alive():
                 raise RuntimeError("previous obstacle worker is still stopping")
             if self._sub is None:
                 self._sub = self.create_subscription(

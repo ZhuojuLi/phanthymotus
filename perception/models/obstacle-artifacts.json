@@ -2,11 +2,18 @@
   "schema_version": 1,
   "artifacts": [
     {
-      "name": "zipdepth_base_npu_int8_engine",
-      "url": "http://172.28.4.81:34567/zengzhitao/embodied-ai/obstacle-distance/zipdepth-int8-jp6-trt10.4/zipdepth-base-npu-512x384-int8.engine",
-      "size_bytes": 7935428,
-      "sha256": "aa34296bcaeed28a5176b423f074da3923c996e7be06702a3952d475000a8887",
-      "destination": "/models/obstacle-distance/zipdepth-int8/zipdepth-base-npu-512x384-int8.engine"
+      "name": "dav2_indoor_small_ft_onnx",
+      "url": "http://172.28.4.81:34567/lizhuoju/embodied-ai/obstacle-distance/dav2-metric-small-onnx/dav2_indoor_small_ft.onnx",
+      "size_bytes": 1844031,
+      "sha256": "0c051be0e0b786cc97cecc41c24c82a2f6e3d086fdb76d6fdc0031b2d885976e",
+      "destination": "/opt/phanthy-motus/models/obstacle/dav2_indoor_small_ft.onnx"
+    },
+    {
+      "name": "dav2_indoor_small_ft_onnx_data",
+      "url": "http://172.28.4.81:34567/lizhuoju/embodied-ai/obstacle-distance/dav2-metric-small-onnx/dav2_indoor_small_ft.onnx.data",
+      "size_bytes": 98959360,
+      "sha256": "c85e686531a611a480fae0232c12b6e60168325eca123c72e1cf313282cad7c0",
+      "destination": "/opt/phanthy-motus/models/obstacle/dav2_indoor_small_ft.onnx.data"
     },
     {
       "name": "yolo26n_depth_int8_engine",
@@ -21,20 +28,6 @@
       "size_bytes": 5641961,
       "sha256": "7cb85598bc50b82ab5835102dab9214f6e58a0061c6a1891ee018387346bae30",
       "destination": "/models/obstacle-distance/zipdepth-int8/yolo26n-seg-int8.engine"
-    },
-    {
-      "name": "places365_resnet18_static_qoperator_int8_onnx",
-      "url": "http://172.28.4.81:34567/zengzhitao/embodied-ai/obstacle-distance/zipdepth-int8-jp6-trt10.4/resnet18_places365-static-qoperator-int8.onnx",
-      "size_bytes": 11495285,
-      "sha256": "eb4d668a92398b604dcc563423baf213a78b9d1cdaee012666fcd97adb0486ea",
-      "destination": "/models/obstacle-distance/zipdepth-int8/resnet18_places365-static-qoperator-int8.onnx"
-    },
-    {
-      "name": "places365_indoor_outdoor_labels",
-      "url": "http://172.28.4.81:34567/zengzhitao/embodied-ai/obstacle-distance/zipdepth-int8-jp6-trt10.4/IO_places365.txt",
-      "size_bytes": 6214,
-      "sha256": "49f8c7fbeeb70deb055c040a1807a95b234bbac92902e1b6edfffbdd8411e1f1",
-      "destination": "/models/obstacle-distance/zipdepth-int8/IO_places365.txt"
     }
   ]
 }
