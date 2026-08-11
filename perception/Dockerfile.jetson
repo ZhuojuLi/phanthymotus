@@ -1,6 +1,8 @@
-# JetPack 6 obstacle-only image. This follows the leaderboard-proven OCR
-# image layout: ROS Humble on JP6 with Python 3.10 and CPU ONNX Runtime.
-# Build context: repository root.
+# JetPack 6 obstacle-only image. Its base-image layout follows the proven OCR
+# Dockerfile: ROS Humble comes from the JP6 ROS image and CUDA torch/torchvision
+# are copied from the matching L4T PyTorch donor. Build from the repository root:
+#   docker build -f perception/Dockerfile.jetson --network=host \
+#     -t phanthymotus-perception-obstacle:jp6 .
 
 ARG PYPI_MIRROR=https://pypi.tuna.tsinghua.edu.cn/simple/
 ARG APT_MIRROR=mirrors.tuna.tsinghua.edu.cn
@@ -8,12 +10,13 @@ ARG ROS_BASE=docker.m.daocloud.io/dustynv/ros:humble-desktop-l4t-r36.4.0
 ARG PYTORCH_DONOR=docker.m.daocloud.io/dustynv/l4t-pytorch:r36.4.0
 ARG BASE_IMAGE=
 
+# Match the OCR branch's JP6 base construction. Local Jetson builds normally
+# pass BASE_IMAGE=local/phanthy-motus/jetson-base:jp6-torch and reuse the image
+# prepared by deploy/prepare_jp_v6_local.sh.
 FROM ${PYTORCH_DONOR} AS pytorch-donor
 FROM ${ROS_BASE} AS jp6-torch-built
-RUN rm -f /etc/apt/sources.list.d/* && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/* && \
-    apt-get -o Acquire::AllowInsecureRepositories=true update && \
-    apt-get install -y --no-install-recommends --allow-unauthenticated libopenblas-base && \
-    rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*
+# The ROS JP6 base already provides OpenBLAS. Avoid touching its expired ROS APT
+# metadata here; in particular, do not copy OCR's --allow-unauthenticated workaround.
 COPY --from=pytorch-donor /usr/local/lib/python3.10/dist-packages/ /tmp/pt-donor/
 RUN cd /tmp/pt-donor && \
     mkdir -p /usr/local/lib/python3.10/dist-packages && \
@@ -27,7 +30,8 @@ RUN cd /tmp/pt-donor && \
     rm -rf /tmp/pt-donor
 
 FROM ${BASE_IMAGE:-jp6-torch-built}
-ARG PYPI_MIRROR APT_MIRROR
+ARG PYPI_MIRROR
+ARG APT_MIRROR
 
 ENV PIP_INDEX_URL=${PYPI_MIRROR} \
     PIP_EXTRA_INDEX_URL= \
@@ -36,41 +40,29 @@ ENV PIP_INDEX_URL=${PYPI_MIRROR} \
     OPENBLAS_NUM_THREADS=1 \
     MKL_NUM_THREADS=1 \
     NUMEXPR_NUM_THREADS=1 \
-    OPENCV_FOR_THREADS_NUM=1 \
-    MALLOC_ARENA_MAX=2
+    MALLOC_ARENA_MAX=2 \
+    FASTDDS_BUILTIN_TRANSPORTS=UDPv4 \
+    YOLO_CONFIG_DIR=/tmp
 
 RUN if [ -n "${APT_MIRROR}" ]; then \
       sed -i "s/archive.ubuntu.com/${APT_MIRROR}/g; s/ports.ubuntu.com/${APT_MIRROR}/g" \
         /etc/apt/sources.list; \
     fi
 
-RUN rm -f /etc/apt/sources.list.d/* && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/* && \
-    apt-get -o Acquire::AllowInsecureRepositories=true update && \
-    apt-get install -y --no-install-recommends --allow-unauthenticated \
-      build-essential python3-dev && \
-    apt-get clean && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*
-
-RUN pip3 install --no-cache-dir -i ${PYPI_MIRROR} colcon-common-extensions "empy<4"
-
-COPY deploy/ros-base/audio_msgs/ /ros_ws/src/audio_msgs/
-RUN cd /ros_ws && \
-    . /opt/ros/humble/install/setup.bash && \
-    colcon build --packages-select audio_msgs --cmake-args -DCMAKE_BUILD_TYPE=Release
-
-# Pin the exact CPU runtime used by the proven OCR submission. Install a
-# self-contained OpenCV wheel instead of the JP5 system cv2 that requires the
-# missing libffi.so.8 observed in leaderboard logs.
-RUN pip3 uninstall -y onnxruntime onnxruntime-gpu opencv-python opencv-python-headless 2>/dev/null || true; \
-    pip3 install --no-cache-dir -i ${PYPI_MIRROR} \
+# Keep the CUDA-enabled torch/torchvision shipped by the OCR-compatible JP6 base.
+# The mixed TensorRT backend needs the YOLO26 depth predictor introduced after
+# 8.4.102. Pin the Jetson-tested runtime without allowing pip to replace CUDA
+# torch.
+RUN pip3 install --no-cache-dir -i ${PYPI_MIRROR} \
       "numpy==1.26.4" \
-      "onnxruntime==1.23.0" \
-      "opencv-python-headless==4.11.0.86" \
-      pyyaml websockets && \
-    python3 -c "import cv2, onnxruntime as ort; assert ort.__version__ == '1.23.0'; assert 'CPUExecutionProvider' in ort.get_available_providers(); print('cv2', cv2.__version__, 'ort', ort.__version__)"
+      "onnxruntime==1.23.2" \
+      pyyaml requests scipy matplotlib pandas tqdm Pillow psutil py-cpuinfo \
+      seaborn polars "ultralytics-thop>=2.0.0" && \
+    pip3 install --no-cache-dir --no-deps -i ${PYPI_MIRROR} \
+      "ultralytics==8.4.115"
 
-# Keep models outside /models because the runtime service mounts
-# /opt/embodied/models over that path and would hide image-baked artifacts.
-# Manifest destinations are already /opt/phanthy-motus/models/obstacle/*.
+# Models are external artifacts. The downloader installs them atomically only
+# after exact byte-size and SHA256 verification.
 COPY perception/models/obstacle-artifacts.json /tmp/obstacle-artifacts.json
 COPY perception/utils/obstacle_model_downloader.py /tmp/obstacle_model_downloader.py
 RUN python3 /tmp/obstacle_model_downloader.py \
@@ -83,25 +75,24 @@ COPY perception/main.py /work/main.py
 COPY perception/plugins/ /work/plugins/
 COPY perception/utils/ /work/utils/
 COPY perception/config.yaml /work/config.yaml
+# The platform launches the service with the FastDDS profile at this path
+# (same layout as the judge evaluation image). Ship it so rclpy/FastDDS does
+# not fall back to an unparsed XML on every node start.
 COPY perception/config/fastdds_large_message.xml /opt/phanthy-motus/config/fastdds_large_message.xml
 
 RUN python3 -m py_compile \
       /work/main.py \
       /work/plugins/obstacle.py \
+      /work/plugins/obstacle_distance_core/*.py \
       /work/utils/obstacle_model_downloader.py && \
-    python3 -c "import os, cv2, onnxruntime as ort; root='/opt/phanthy-motus/models/obstacle'; names=['dav2_indoor_small_ft.onnx','dav2_indoor_small_ft.onnx.data','dav2_outdoor_small_ft4.onnx','dav2_outdoor_small_ft4.onnx.data','yolo26n-seg.onnx']; assert all(os.path.isfile(os.path.join(root, n)) for n in names); [ort.InferenceSession(os.path.join(root, n), providers=['CPUExecutionProvider']) for n in names if n.endswith('.onnx')]"
+    cd /work && python3 -c "from plugins.obstacle_distance_core.zipdepth_tensorrt_backends import create_backends; import os; paths=['/models/obstacle-distance/zipdepth-int8/zipdepth-base-npu-512x384-int8.engine', '/models/obstacle-distance/zipdepth-int8/yolo26n-depth-int8.engine', '/models/obstacle-distance/zipdepth-int8/yolo26n-seg-int8.engine', '/models/obstacle-distance/zipdepth-int8/resnet18_places365-static-qoperator-int8.onnx', '/models/obstacle-distance/zipdepth-int8/IO_places365.txt']; assert all(os.path.isfile(path) for path in paths)"
 
 EXPOSE 15720
-EXPOSE 15721
-
-RUN find /ros_ws/install /opt/ros/humble/install -type d \( -name "site-packages" -o -name "dist-packages" \) \
-      > /usr/local/lib/python3.10/dist-packages/ros_ws.pth
-
-ENV LD_LIBRARY_PATH="/ros_ws/install/audio_msgs/lib:/opt/ros/humble/install/lib:${LD_LIBRARY_PATH}"
-ENV AMENT_PREFIX_PATH="/ros_ws/install/audio_msgs:/opt/ros/humble/install"
 
 CMD ["/bin/bash", "-c", \
-    "export LD_PRELOAD=/usr/lib/aarch64-linux-gnu/libgomp.so.1 && \
-     source /opt/ros/humble/install/setup.bash && \
-     source /ros_ws/install/setup.bash && \
+    "if [ -f /opt/ros/humble/setup.bash ]; then \
+       source /opt/ros/humble/setup.bash; \
+     else \
+       source /opt/ros/humble/install/setup.bash; \
+     fi && \
      python3 /work/main.py"]

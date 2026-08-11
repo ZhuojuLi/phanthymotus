@@ -26,19 +26,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends espeak-ng && \
     rm -rf /var/lib/apt/lists/*
 RUN pip3 install --no-cache-dir -i ${PYPI_MIRROR} \
     phonemizer
-RUN pip3 install --no-cache-dir -i ${PYPI_MIRROR} \
-    onnxruntime opencv-python-headless
-
-# Obstacle models are external artifacts baked into the image at build time
-# (downloaded from the juicefs mirror, sha256+size verified) so the runtime
-# container never needs network access for them. Destinations live under
-# /opt/phanthy-motus/models/obstacle so a runtime /models mount cannot hide them.
-COPY models/obstacle-artifacts.json /tmp/obstacle-artifacts.json
-COPY utils/obstacle_model_downloader.py /tmp/obstacle_model_downloader.py
-RUN python3 /tmp/obstacle_model_downloader.py \
-      --manifest /tmp/obstacle-artifacts.json \
-      --timeout 120 \
-      --retries 3
 
 # Override base image RMW (some ros-base tags ship cyclonedds by default)
 ENV RMW_IMPLEMENTATION=rmw_fastrtps_cpp
@@ -49,7 +36,6 @@ COPY main.py    /work/main.py
 COPY plugins/   /work/plugins/
 COPY utils/     /work/utils/
 COPY config.yaml /work/config.yaml
-COPY config/fastdds_large_message.xml /opt/phanthy-motus/config/fastdds_large_message.xml
 COPY deploy/     /deploy/
 
 EXPOSE 15720
