@@ -16,18 +16,25 @@
       "destination": "/opt/phanthy-motus/models/obstacle/dav2_indoor_small_ft.onnx.data"
     },
     {
-      "name": "yolo26n_depth_int8_engine",
-      "url": "http://172.28.4.81:34567/zengzhitao/embodied-ai/obstacle-distance/zipdepth-int8-jp6-trt10.4/yolo26n-depth-int8.engine",
-      "size_bytes": 7778158,
-      "sha256": "8174652d6ba72af15c10caccf95629d585d33245e5242aa1f1734317d5a23f7c",
-      "destination": "/models/obstacle-distance/zipdepth-int8/yolo26n-depth-int8.engine"
+      "name": "dav2_outdoor_small_ft4_onnx",
+      "url": "http://172.28.4.81:34567/lizhuoju/embodied-ai/obstacle-distance/dav2-metric-small-onnx/dav2_outdoor_small_ft4.onnx",
+      "size_bytes": 1844548,
+      "sha256": "7fe168f3e5416e36323465651eba606491f568f1a8bd2d15488346259a966b92",
+      "destination": "/opt/phanthy-motus/models/obstacle/dav2_outdoor_small_ft4.onnx"
     },
     {
-      "name": "yolo26n_seg_int8_engine",
-      "url": "http://172.28.4.81:34567/zengzhitao/embodied-ai/obstacle-distance/zipdepth-int8-jp6-trt10.4/yolo26n-seg-int8.engine",
-      "size_bytes": 5641961,
-      "sha256": "7cb85598bc50b82ab5835102dab9214f6e58a0061c6a1891ee018387346bae30",
-      "destination": "/models/obstacle-distance/zipdepth-int8/yolo26n-seg-int8.engine"
+      "name": "dav2_outdoor_small_ft4_onnx_data",
+      "url": "http://172.28.4.81:34567/lizhuoju/embodied-ai/obstacle-distance/dav2-metric-small-onnx/dav2_outdoor_small_ft4.onnx.data",
+      "size_bytes": 98959360,
+      "sha256": "871577eaebf222ef07fddcb19f2151eb6fbdc9f7f2ecac7600eb081d0cae8610",
+      "destination": "/opt/phanthy-motus/models/obstacle/dav2_outdoor_small_ft4.onnx.data"
+    },
+    {
+      "name": "yolo26n_seg_onnx",
+      "url": "http://172.28.4.81:34567/lizhuoju/embodied-ai/obstacle-distance/dav2-metric-small-onnx/yolo26n-seg.onnx",
+      "size_bytes": 11164634,
+      "sha256": "cef701e7aac2381aaaa7c740d0c6ec6151d49d1f14aec558b6035ece73c99790",
+      "destination": "/opt/phanthy-motus/models/obstacle/yolo26n-seg.onnx"
     }
   ]
 }
