@@ -85,7 +85,7 @@ RUN python3 -m py_compile \
       /work/plugins/obstacle.py \
       /work/plugins/obstacle_distance_core/*.py \
       /work/utils/obstacle_model_downloader.py && \
-    cd /work && python3 -c "from plugins.obstacle_distance_core.zipdepth_tensorrt_backends import create_backends; import os; paths=['/models/obstacle-distance/zipdepth-int8/zipdepth-base-npu-512x384-int8.engine', '/models/obstacle-distance/zipdepth-int8/yolo26n-depth-int8.engine', '/models/obstacle-distance/zipdepth-int8/yolo26n-seg-int8.engine', '/models/obstacle-distance/zipdepth-int8/resnet18_places365-static-qoperator-int8.onnx', '/models/obstacle-distance/zipdepth-int8/IO_places365.txt']; assert all(os.path.isfile(path) for path in paths)"
+    cd /work && python3 -c "from plugins.obstacle_distance_core.mix_backends import create_backends; import os; paths=['/models/obstacle-distance/zipdepth-int8/yolo26n-depth-int8.engine', '/models/obstacle-distance/zipdepth-int8/yolo26n-seg-int8.engine']; assert all(os.path.isfile(path) for path in paths)"
 
 EXPOSE 15720
 
