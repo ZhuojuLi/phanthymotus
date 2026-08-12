@@ -66,11 +66,11 @@ _JUICEFS_BASE = os.environ.get(
     "http://172.28.4.81:34567/lizhuoju/embodied-ai/obstacle-distance/dav2-metric-small-onnx")
 _MODEL_FILES = {
     "indoor": "dav2_indoor_small_ft.onnx",     # fine-tuned on NYU ROI-P1 labels (val F1@1m 0.80)
-    "outdoor": "dav2_outdoor_small_ft4.onnx",  # round-5 ft4: mask-P1 @ F1@2m supervision (val F1@2m 0.595)
+    "outdoor": "dav2_outdoor_small_ft5.onnx",  # round-6 ft5: ft4 + boundary-window regression (leaked-29 F1@2m 1.000)
     "seg": "yolo26n-seg.onnx",                 # outdoor vehicle mask (3.1M params; total ~28M < 30M budget)
 }
 # depth heads keep weights in an external-data sidecar — downloaded alongside
-_EXTRA_FILES = ["dav2_indoor_small_ft.onnx.data", "dav2_outdoor_small_ft4.onnx.data"]
+_EXTRA_FILES = ["dav2_indoor_small_ft.onnx.data", "dav2_outdoor_small_ft5.onnx.data"]
 
 TOOLS = [
     {
