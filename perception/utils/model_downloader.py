@@ -1282,7 +1282,7 @@ _VOP_VOCAB = {
 
 VOP_MODEL_BUNDLES = {
     "jp61": {
-        "base_url": f"{VISION_MODEL_BASE}/yoloe-26s-seg/tensorrt-jp61-trt10.4-orin-640",
+        "base_url": "http://172.28.4.81:34567/lizhuoju/embodied-ai/vop/yoloe-26s-seg-144-fc64fbc/jp61",
         "files": {
             "yoloe-26s-seg.engine": {
                 "size": 24780908,
@@ -1292,7 +1292,7 @@ VOP_MODEL_BUNDLES = {
         },
     },
     "jp511": {
-        "base_url": f"{VISION_MODEL_BASE}/yoloe-26s-seg/tensorrt-jp511-trt8.5-orin-640",
+        "base_url": "http://172.28.4.81:34567/lizhuoju/embodied-ai/vop/yoloe-26s-seg-144-fc64fbc/jp511",
         "files": {
             "yoloe-26s-seg.engine": {
                 "size": 23742701,
