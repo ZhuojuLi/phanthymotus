@@ -75,7 +75,7 @@ DEFAULT_OUTPUT_TOPIC = "/perception/vop"
 # Instance key for the topic-less card, mirroring tts's `_default`.
 _DEFAULT_INSTANCE = "_default"
 
-DEFAULT_MODEL = "yoloe-26s-seg"
+DEFAULT_MODEL = "yoloe-26m-seg"
 
 # Names that already exist in deployed canvas cards and yaml. A card saved when
 # this plugin ran YOLOv8-World must keep loading after an upgrade: the engine it
@@ -85,6 +85,8 @@ _MODEL_ALIASES = {
     "yolov8s-worldv2": DEFAULT_MODEL,
     "yolov8s-world": DEFAULT_MODEL,
     "yoloe-26s": DEFAULT_MODEL,
+    "yoloe-26s-seg": DEFAULT_MODEL,
+    "yoloe-26m": DEFAULT_MODEL,
 }
 
 
@@ -764,7 +766,7 @@ class VideoObjectPerceptionPlugin:
 
         model_dir = os.environ.get("VOP_MODEL_DIR", "/models/vop")
         progress_cb, _ = fetch_status(
-            lambda text: setattr(self, "_model_load_status", text), "yoloe-26s-seg")
+            lambda text: setattr(self, "_model_load_status", text), self._model_name or DEFAULT_MODEL)
         paths = ensure_vop_model(model_dir, progress_cb=progress_cb)
         engine = next(p for name, p in paths.items() if name.endswith(".engine"))
         return engine, self._read_vocab(paths.get("vocab.json"))

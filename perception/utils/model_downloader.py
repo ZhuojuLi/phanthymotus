@@ -1273,30 +1273,22 @@ VISION_MODEL_BASE = os.environ.get("VISION_MODEL_BASE_URL", f"{COS_BASE}/vision"
 # the file that was uploaded — the point of the pin is to catch a bad transfer,
 # and hashing the source cannot. (Same note as THAI_TTS_ARCHIVE / KOKORO.)
 #
-# vocab.json is byte-identical across both families; the two bundles carry
-# their own copy anyway so a family is one self-contained download.
+# This submission pins YOLOE-26m-seg with the canonical 220-class vocabulary.
+# Built on Orin inside the JP6.1 perception image (TensorRT 10.4), FP16/640/batch1.
+# JP5 is deliberately unavailable for this candidate: select JP_VERSION="6".
+# An older 144-class JP5 engine must not silently stand in for the M-220 model.
 _VOP_VOCAB = {
-    "size": 1969,
-    "sha256": "5aaa0f34df07fff0037318c4100f40bf55b62beb439b89f60b6641924f17fd3b",
+    "size": 3046,
+    "sha256": "3a935ba55ed5b5b0ff7bdab27244400f8c2e88ac143d6949e9460cb7a35ba355",
 }
 
 VOP_MODEL_BUNDLES = {
     "jp61": {
-        "base_url": "http://172.28.4.81:34567/lizhuoju/embodied-ai/vop/yoloe-26s-seg-144-fc64fbc/jp61",
+        "base_url": "http://172.28.4.81:34567/lizhuoju/embodied-ai/vop/yoloe-26m-seg-220-20261104/jp61",
         "files": {
-            "yoloe-26s-seg.engine": {
-                "size": 24780908,
-                "sha256": "b8cb77a0685a399ef7d83dfc4d0777b54e66ea110d1085a005c4f153366e4099",
-            },
-            "vocab.json": _VOP_VOCAB,
-        },
-    },
-    "jp511": {
-        "base_url": "http://172.28.4.81:34567/lizhuoju/embodied-ai/vop/yoloe-26s-seg-144-fc64fbc/jp511",
-        "files": {
-            "yoloe-26s-seg.engine": {
-                "size": 23742701,
-                "sha256": "49df478a308de3a1f996d4784d2b00245486c04a40e0b7b6005b7226674da4fe",
+            "yoloe-26m-seg.engine": {
+                "size": 51569965,
+                "sha256": "3d18b9e83843f7278c6d9b7b63c7c72baa88ddc04f3f0d77f93231a4ded8555a",
             },
             "vocab.json": _VOP_VOCAB,
         },

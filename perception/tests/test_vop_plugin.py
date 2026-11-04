@@ -57,12 +57,14 @@ def _plugin(cfg=None, model=None):
 # ── model name aliasing ──────────────────────────────────────────────────────
 
 @pytest.mark.parametrize("configured,expected", [
-    ("yolov8s-worldv2", "yoloe-26s-seg"),
-    ("yolov8s-worldv2.pt", "yoloe-26s-seg"),
-    ("yolov8s-world", "yoloe-26s-seg"),
-    ("yoloe-26s", "yoloe-26s-seg"),
-    ("yoloe-26s-seg", "yoloe-26s-seg"),
-    ("", "yoloe-26s-seg"),
+    ("yolov8s-worldv2", "yoloe-26m-seg"),
+    ("yolov8s-worldv2.pt", "yoloe-26m-seg"),
+    ("yolov8s-world", "yoloe-26m-seg"),
+    ("yoloe-26s", "yoloe-26m-seg"),
+    ("yoloe-26s-seg", "yoloe-26m-seg"),
+    ("yoloe-26m", "yoloe-26m-seg"),
+    ("yoloe-26m-seg", "yoloe-26m-seg"),
+    ("", "yoloe-26m-seg"),
 ])
 def test_legacy_model_names_still_resolve(configured, expected):
     """A card saved before the model switch must not become state: error."""
