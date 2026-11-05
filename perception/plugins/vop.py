@@ -75,7 +75,7 @@ DEFAULT_OUTPUT_TOPIC = "/perception/vop"
 # Instance key for the topic-less card, mirroring tts's `_default`.
 _DEFAULT_INSTANCE = "_default"
 
-DEFAULT_MODEL = "yoloe-26m-seg"
+DEFAULT_MODEL = "yoloe-26m-det"
 
 # Names that already exist in deployed canvas cards and yaml. A card saved when
 # this plugin ran YOLOv8-World must keep loading after an upgrade: the engine it
@@ -87,6 +87,7 @@ _MODEL_ALIASES = {
     "yoloe-26s": DEFAULT_MODEL,
     "yoloe-26s-seg": DEFAULT_MODEL,
     "yoloe-26m": DEFAULT_MODEL,
+    "yoloe-26m-seg": DEFAULT_MODEL,
 }
 
 

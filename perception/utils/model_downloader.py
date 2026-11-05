@@ -1273,22 +1273,25 @@ VISION_MODEL_BASE = os.environ.get("VISION_MODEL_BASE_URL", f"{COS_BASE}/vision"
 # the file that was uploaded — the point of the pin is to catch a bad transfer,
 # and hashing the source cannot. (Same note as THAI_TTS_ARCHIVE / KOKORO.)
 #
-# This submission pins YOLOE-26m-seg with the canonical 220-class vocabulary.
+# This submission pins a YOLOE-26m detector with the canonical 220-class vocabulary.
 # Built on Orin inside the JP6.1 perception image (TensorRT 10.4), FP16/640/batch1.
 # JP5 is deliberately unavailable for this candidate: select JP_VERSION="6".
 # An older 144-class JP5 engine must not silently stand in for the M-220 model.
+# Organizer fine-tune / original 50:50 fixed 220-class detector; JP6 only.
+# Built with TensorRT 10.4 on Orin. Artifact bytes are immutable per version.
+# VOP pins are verified by downloading the published JuiceFS HTTP files.
 _VOP_VOCAB = {
     "size": 3046,
-    "sha256": "3a935ba55ed5b5b0ff7bdab27244400f8c2e88ac143d6949e9460cb7a35ba355",
+    "sha256": "a9086a8ad5290a3c6b14e3b73512d4e4a63c9031f4a20d944bb0d7e8a352132f",
 }
 
 VOP_MODEL_BUNDLES = {
     "jp61": {
-        "base_url": "http://172.28.4.81:34567/lizhuoju/embodied-ai/vop/yoloe-26m-seg-220-20261104/jp61",
+        "base_url": "http://172.28.4.81:34567/lizhuoju/embodied-ai/vop/m220-organizer-blend50-20261105/jp61",
         "files": {
-            "yoloe-26m-seg.engine": {
-                "size": 51569965,
-                "sha256": "3d18b9e83843f7278c6d9b7b63c7c72baa88ddc04f3f0d77f93231a4ded8555a",
+            "yoloe-26m-det.engine": {
+                "size": 45124020,
+                "sha256": "2b9ec897faec1942d07a6452a311c45ab8cde553f22c9c01b8d14cf8c72df83a",
             },
             "vocab.json": _VOP_VOCAB,
         },
