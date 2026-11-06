@@ -1277,7 +1277,7 @@ VISION_MODEL_BASE = os.environ.get("VISION_MODEL_BASE_URL", f"{COS_BASE}/vision"
 # Built on Orin inside the JP6.1 perception image (TensorRT 10.4), FP16/640/batch1.
 # JP5 is deliberately unavailable for this candidate: select JP_VERSION="6".
 # An older 144-class JP5 engine must not silently stand in for the M-220 model.
-# Target-domain finetune / B2 anchor 50:50 fixed 220-class detector; JP6 only.
+# B4: frozen B3 weights, one-to-many dense head + class-aware NMS; JP6 only.
 # Built with TensorRT 10.4 on Orin. Artifact bytes are immutable per version.
 # VOP pins are verified by downloading the published JuiceFS HTTP files.
 _VOP_VOCAB = {
@@ -1287,11 +1287,11 @@ _VOP_VOCAB = {
 
 VOP_MODEL_BUNDLES = {
     "jp61": {
-        "base_url": "http://172.28.4.81:34567/lizhuoju/embodied-ai/vop/m220-targeted-20261105/jp61",
+        "base_url": "http://172.28.4.81:34567/lizhuoju/embodied-ai/vop/b4-one2many-20261106/jp61",
         "files": {
             "yoloe-26m-det.engine": {
-                "size": 45084403,
-                "sha256": "3d34b937a3c0c4b38e526dd485687cfc8859cc49a849053faa4c24c89df920bb",
+                "size": 44860513,
+                "sha256": "489ccbcb040979a50fe3bcba89e843439e74439e0580ec9cd3b58d594abf57d4",
             },
             "vocab.json": _VOP_VOCAB,
         },

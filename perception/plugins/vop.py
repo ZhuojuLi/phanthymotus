@@ -508,7 +508,8 @@ class _VOPNode(Node):
                     continue
                 outputs, meta = self._model.infer(frame)
                 boxes, scores, classes = decode_detections(
-                    outputs, meta, self._confidence
+                    outputs, meta, self._confidence,
+                    metadata=getattr(self._model, 'metadata', None)
                 )
                 objects = self._extract_objects(boxes, scores, classes, frame)
                 self._publish_objects(objects, started)
@@ -838,7 +839,8 @@ class VideoObjectPerceptionPlugin:
         from plugins.vision_runtime import decode_detections
 
         outputs, meta = model.infer(frame)
-        boxes, scores, classes = decode_detections(outputs, meta, confidence)
+        boxes, scores, classes = decode_detections(outputs, meta, confidence,
+            metadata=getattr(model, 'metadata', None))
 
         # Same shape the stream publishes, so a consumer written against
         # {topic}/objects needs no second parser — plus the pixel box, which a
