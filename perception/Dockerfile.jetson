@@ -580,6 +580,20 @@ assert not any(0x4E00 <= ord(c) <= 0x9FFF for c in out), out; \
 print('[build] janome ok, no kanji left: %s' % out)"; \
     fi && rm -f /tmp/ja-requirements.txt
 
+# ── Xiaoyou 04 frontend, separate from the ROS/ORT interpreter ──────
+# JP5's cp38 cannot install the training frontend's spaCy 3.8 dependency.
+# The same Python 3.11.15 frontend is used on both JP lines; models and the
+# English language data remain in the pinned release, outside Git.
+# A preparation-only branch has no model release and skips this dependency
+# layer. Binding the release invalidates just these late build layers.
+COPY perception/plugins/xiaoyou04/release.json /tmp/xiaoyou04-release.json
+COPY perception/plugins/xiaoyou04/requirements.frontend.txt /tmp/xiaoyou04-frontend.txt
+COPY perception/deploy/setup_xiaoyou04_frontend.py /tmp/setup_xiaoyou04_frontend.py
+RUN python3 /tmp/setup_xiaoyou04_frontend.py \
+      --release-spec /tmp/xiaoyou04-release.json \
+      --requirements /tmp/xiaoyou04-frontend.txt
+ENV XIAOYOU04_FRONTEND_PYTHON=/opt/xiaoyou04-frontend/bin/python
+
 # ── Application code ───────────────────────────────────────────────
 WORKDIR /work
 COPY perception/main.py    /work/main.py

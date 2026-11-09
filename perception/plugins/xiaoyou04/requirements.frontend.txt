@@ -1,0 +1,7 @@
+# Install in a dedicated Python 3.11 environment, separate from ROS and ORT.
+# en_core_web_sm and the exact frontend.py/config.json travel with the release.
+misaki[en,zh]==0.9.4
+numpy==1.26.4
+spacy==3.8.16
+phonemizer-fork==3.3.2
+espeakng-loader==0.2.4

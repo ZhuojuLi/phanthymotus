@@ -1820,8 +1820,9 @@ def _session_keys(cfg: dict) -> dict:
 class SherpaOnnxTTSPlugin:
     PREFIX = "tts"
 
-    def __init__(self, plugin_cfg: dict, executor):
+    def __init__(self, plugin_cfg: dict, executor, *, adapter_factory=None):
         self._cfg      = plugin_cfg
+        self._adapter_factory = adapter_factory or _build_tts_adapter
         # Normalise the session keys up front so the first `config` that repeats
         # them compares equal instead of rebuilding what was just built.
         self._cfg.update(_session_keys(plugin_cfg))
@@ -1833,7 +1834,7 @@ class SherpaOnnxTTSPlugin:
         # heartbeat can show it while a rebuild is still blocked here.
         self._load_status = None
         try:
-            self._adapter  = _build_tts_adapter(
+            self._adapter  = self._adapter_factory(
                 plugin_cfg,
                 on_status=lambda text: setattr(self, "_load_status", text))
         except Exception as e:
@@ -2104,7 +2105,7 @@ class SherpaOnnxTTSPlugin:
                 self._loading = True
                 self._load_status = None
                 try:
-                    self._adapter = _build_tts_adapter(
+                    self._adapter = self._adapter_factory(
                         self._cfg,
                         on_status=lambda text: setattr(self, "_load_status", text))
                 finally:

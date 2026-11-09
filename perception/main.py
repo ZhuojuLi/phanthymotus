@@ -147,15 +147,20 @@ class PerceptionBundle:
 
         tts_plugin = None
         if plugins_cfg.get("tts", {}).get("enabled", False):
-            from plugins.tts import TTSPlugin
             # Guarded: TTSPlugin validates its engine configuration in the
             # constructor (backend, speaker_id, engine name). An unusable TTS
             # config must not take ASR/VOP/OCR down with it — the tool simply
             # does not appear, which is visible in the dashboard.
             try:
+                import importlib
+                plugin_name = os.environ.get("TTS_PLUGIN") or "tts"
+                if not plugin_name.isidentifier():
+                    raise ValueError("TTS_PLUGIN must name a module under plugins")
+                TTSPlugin = importlib.import_module(
+                    f"plugins.{plugin_name}").TTSPlugin
                 tts_plugin = TTSPlugin(plugins_cfg["tts"], executor)
                 self._plugins.append(tts_plugin)
-                log.info("TTSPlugin loaded")
+                log.info("TTSPlugin loaded (%s)", plugin_name)
             except Exception:
                 log.error("TTSPlugin failed to load; continuing without TTS",
                           exc_info=True)
@@ -719,8 +724,8 @@ def main():
     global _bundle
 
     cfg      = _load_config()
-    mcp_port = int(cfg.get("mcp_port", 15720))
-    ws_port  = int(cfg.get("ws_port",  15721))
+    mcp_port = int(os.environ.get("MCP_PORT") or cfg.get("mcp_port", 15720))
+    ws_port = int(os.environ.get("WS_PORT") or cfg.get("ws_port", 15721))
 
     log.info(f"perception bundle starting, mcp_port={mcp_port}, ws_port={ws_port}")
     log.info(f"config: plugins.asr.enabled={cfg.get('plugins',{}).get('asr',{}).get('enabled')}, "

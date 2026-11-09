@@ -1,0 +1,7 @@
+{
+  "schema": "xiaoyou04-release-v1",
+  "status": "preparing",
+  "voice": "04",
+  "architecture": "Kokoro82M_v1.0",
+  "reason": "Training and listening acceptance are in progress. Bind the verified ONNX release after export; no baseline voice is substituted."
+}

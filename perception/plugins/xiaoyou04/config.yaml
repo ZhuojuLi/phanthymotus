@@ -1,0 +1,11 @@
+mcp_port: 15720
+ws_port: 15721
+plugins:
+  tts:
+    enabled: true
+    speed: 1.0
+    warmup: true
+  echo_cancellation:
+    enabled: false
+  audio_mixer:
+    enabled: false
