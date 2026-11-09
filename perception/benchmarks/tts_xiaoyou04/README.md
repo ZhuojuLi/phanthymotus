@@ -68,4 +68,4 @@ python3 perception/tools/benchmark_xiaoyou04.py \
 
 以上测量只覆盖 runtime。还需在两个 JP 上通过真实 MCP `tools/list`、`tools/call` 和 ROS 文本输入/音频输出回放，验证节点启动、重复启动、打断、停止、EOF 和多实例 topic 对应，并记录端到端首音延迟。现有模型按句段生成后流出 PCM，单句内部不是逐帧生成；运行时第一段速度不能代替完整链路的 1 秒准入结果。
 
-代码、模型和双 JP 验证完成后，推送到 public 个人 fork，确认完整 commit 在远端可获取，再从 [提交模板](submission.example.yaml) 生成真实 `submit.yaml`，按本次示例选择 `JP_VERSION: "6,5"`。最终由用户手动提交，准备过程不创建平台方案或发起上游 PR。
+代码、模型和双 JP 验证完成后，推送到 public 个人 fork，确认完整 commit 在远端可获取，再从 [提交模板](submission.example.yaml) 生成真实 `submit.yaml`。用户已明确本次榜单选择 JP6，配置固定为 `JP_VERSION: "6"`。最终由用户手动提交，准备过程不创建平台方案或发起上游 PR。

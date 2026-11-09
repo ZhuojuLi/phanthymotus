@@ -11,4 +11,4 @@ env:
   - name: XIAOYOU04_FRONTEND_PYTHON
     value: "/opt/xiaoyou04-frontend/bin/python"
   - name: JP_VERSION
-    value: "6,5"
+    value: "6"
