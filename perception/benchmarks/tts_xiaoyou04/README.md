@@ -1,6 +1,8 @@
-小优 04「明朗利落」的榜单接入代码。当前绑定累计 25,832 步的诊断候选，用于用户要求的首次 JP6 试提交。模型、声线、前端和验收报告均在固定版本的 JuiceFS 包中，逐文件校验；训练仍在继续。
+小优 04「明朗利落」的榜单接入代码。当前绑定累计 25,832 步的诊断候选，用于 JP6 试评。模型、声线、前端和验收报告均在固定版本的 JuiceFS 包中，逐文件校验。
 
-该候选的 `normal_text_parity_passed` 和 `listening_approved` 均为 `false`。12 条完整波形的原有严格数值门槛尚未通过，部分相位边界和变速差异仍需处理；诊断报告随包保留。只有显式设置 `XIAOYOU04_ALLOW_DIAGNOSTIC=1` 才可加载。本轮平台评测用于获得真实链路和听感反馈，不表示正式模型验收通过。
+首轮平台评测在首次 `config` 调用失败：服务加载默认 `tts` 和完整产品配置，评测器却将 `TTS_PLUGIN=tts_xiaoyou04` 作为 MCP 工具名使用。该次运行尚未合成音频，不能解读为模型效果失败。本版让仓库默认配置选择 04，并为评测器工具名提供别名；服务不依赖平台转发自定义环境变量。日志中的四个空云端配置字段按无操作处理，非空值仍明确拒绝。
+
+该候选的 `normal_text_parity_passed` 和 `listening_approved` 均为 `false`。12 条完整波形的原有严格数值门槛尚未通过，部分相位边界和变速差异仍需处理；诊断报告随包保留。加载需显式使用 `XIAOYOU04_ALLOW_DIAGNOSTIC=1` 或配置中的 `allow_diagnostic_trial: true`；本诊断分支的默认配置明确启用后者。本轮平台评测用于获得真实链路和听感反馈，不表示正式模型验收通过。
 
 诊断图的训练权重保持 FP32；声源相位累加和模拟原生 FMA 的临时计算采用 FP64。没有替换为公共底模或其他声音。JP6 单实例 token GPU 烟测已完成，三语各两轮、预热 RTF 0.20–0.23；这些数据不包含前端、MCP/ROS 或三模型并发，不能代替端到端评测。
 
@@ -9,9 +11,9 @@
 已准备的接入行为：
 
 - `MCP_PORT`、`WS_PORT` 优先于 YAML；空环境变量回退到 YAML，再使用原有端口默认值。
-- `TTS_PLUGIN` 为空时加载原有 `plugins.tts.TTSPlugin`；设为 `tts_xiaoyou04` 时加载新插件，公开工具名仍为 `tts`。
+- `TTS_PLUGIN` 优先选择实现模块；为空时由 `plugins.tts.plugin` 选择，未指定时使用原有 `tts`。本分支的默认配置选择 `tts_xiaoyou04`。公开工具仍为 `tts`，同时支持评测器调用 `tts_xiaoyou04`。
 - 新插件复用原有 `start`、`stop`、`speak`、`info`、`config`、`interrupt` 和多实例生命周期；语言为中文、英文、混读，固定一个 04 声线，仅暴露语速设置。
-- 使用专用配置 `plugins/xiaoyou04/config.yaml`，只启用 TTS。提交模板的 `CONFIG_PATH` 对应 Docker 实际复制进去的路径。
+- 默认 `perception/config.yaml` 与专用 `plugins/xiaoyou04/config.yaml` 一致，只启用 TTS；配置明确选择独立前端 Python 和诊断包，不依赖 `CONFIG_PATH` 或前端解释器环境变量的转发。
 - 模型按 archive SHA256 使用独立缓存目录，通过共享下载器加锁下载；逐文件核对大小和 SHA256，并验证声线形状、前端和词表。模型未绑定、文件损坏或请求 GPU 却没有 CUDA provider 时明确报错。
 - 音素前端在独立 Python 3.11.15 子进程运行，保持 Misaki 0.9.4、spaCy 3.8.16 等训练依赖。JP5 的 ROS Python 3.8 与 JP6 的 ROS Python 3.10 均不需要更换。Docker 中只在绑定模型后安装该环境，准备分支跳过这一步。
 - 原生 ONNX 的 token、固定声线、speed 输入由独立 ORT worker 处理。24 kHz FLOAT 波形沿用上游滤波器转换为 16 kHz PCM16；已有 ROS 节点负责音频帧和 EOF，`/tts/test` 仍包装为 WAV。
@@ -25,9 +27,9 @@
 | 冷缓存下载、断网复用、重启、缓存损坏拒绝、独立 ORT worker | 已用小型合成 ONNX 测试图验证，不是训练模型的推理效果证明 |
 | 04 最终模型、ONNX 导出和正常文本等价核验 | 已绑定诊断快照；严格完整波形验收未通过，最终模型待训练、修订与验收 |
 | 绑定固定模型、JuiceFS 上传和 HTTP 回下载校验 | 诊断快照已发布，完整 HTTP 回下载大小和 SHA256 一致 |
-| ARM Docker 构建、JP5/JP6 真实加载、MCP/ROS 音频链路 | 未验证 |
+| JP5/JP6 真实前端、CUDA worker、MCP/ROS 单实例链路 | 已用现有镜像和本版源码复测，清除自定义环境变量，并重放平台工具名和空配置 |
 | Orin 8G 上三个独立模型实例、首字延迟与 RTF | 未验证；需实测，不能以多张画布卡片代替 |
-| public fork 上的完整可提交 commit 和正式 `submit.yaml` | 尚未生成 |
+| public fork 和提交配置 | 首轮已提交但接入失败；修复版使用新 commit，保留原运行身份 |
 
 模型发布包采用平铺目录，至少包含：
 

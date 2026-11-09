@@ -84,12 +84,14 @@ def validate_directory(directory, spec):
     return voice, vocab
 
 
-def ensure_release(model_dir, on_status=None, spec_path=None):
+def ensure_release(model_dir, on_status=None, spec_path=None, *, allow_diagnostic_trial=False):
     from utils.model_downloader import ensure_verified_archive
 
     spec = read_spec(spec_path)
-    if spec.get("diagnostic_trial") and os.environ.get("XIAOYOU04_ALLOW_DIAGNOSTIC") != "1":
-        raise RuntimeError("Diagnostic Xiaoyou 04 release requires explicit XIAOYOU04_ALLOW_DIAGNOSTIC=1")
+    if (spec.get("diagnostic_trial") and os.environ.get("XIAOYOU04_ALLOW_DIAGNOSTIC") != "1"
+            and allow_diagnostic_trial is not True):
+        raise RuntimeError("Diagnostic Xiaoyou 04 release requires explicit XIAOYOU04_ALLOW_DIAGNOSTIC=1 "
+                           "or allow_diagnostic_trial: true in the selected profile")
     # A version gets its own directory; an update cannot mix with an old cache.
     archive = spec.get("archive", {})
     pin = archive.get("sha256", "")

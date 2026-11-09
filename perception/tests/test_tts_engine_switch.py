@@ -788,4 +788,11 @@ def test_the_default_engine_is_vits2_zh_en():
         (pathlib.Path(__file__).resolve().parents[1] / "config.yaml").read_text())
     # config.yaml and the schema must agree, or the card shows one default while
     # the process boots another.
-    assert config["plugins"]["tts"]["engine"] == "vits2-zh-en"
+    profile = config["plugins"]["tts"]
+    if profile.get("plugin", "tts") == "tts":
+        assert profile["engine"] == "vits2-zh-en"
+    else:
+        # This leaderboard branch explicitly boots its dedicated fixed voice;
+        # the generic engine's schema and default remain VITS2.
+        assert profile["plugin"] == "tts_xiaoyou04"
+        assert profile["engine"] == "kokoro-xiaoyou04-zh-en"

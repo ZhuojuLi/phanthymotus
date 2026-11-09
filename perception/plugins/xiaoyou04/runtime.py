@@ -30,7 +30,8 @@ class Xiaoyou04Runtime:
         if self.device not in ("cpu", "gpu"):
             raise ValueError("Xiaoyou 04 device must be cpu or gpu")
         self.directory, self.release, self._voice, self._vocab = ensure_release(
-            cfg.get("model_dir") or "/models/xiaoyou04", on_status=on_status)
+            cfg.get("model_dir") or "/models/xiaoyou04", on_status=on_status,
+            allow_diagnostic_trial=cfg.get("allow_diagnostic_trial", False))
         self._break_ids = {self._vocab[p] for p in ".,;:!?" if p in self._vocab}
         # A finite clause is generated at a time. First-audio latency and seams
         # must be measured on each Jetson; this is not frame-level generation.
@@ -38,7 +39,7 @@ class Xiaoyou04Runtime:
         if not 1 <= self._chunk_tokens <= 510:
             raise ValueError("chunk_tokens must be between 1 and 510")
         try:
-            self._frontend = FrontendClient(self.directory)
+            self._frontend = FrontendClient(self.directory, python=cfg.get("frontend_python"))
             from plugins import ort_worker
             self._worker = ort_worker.get_worker()
             providers = (["CUDAExecutionProvider", "CPUExecutionProvider"]

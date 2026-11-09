@@ -3,6 +3,10 @@ ws_port: 15721
 plugins:
   tts:
     enabled: true
+    plugin: tts_xiaoyou04
+    engine: kokoro-xiaoyou04-zh-en
+    allow_diagnostic_trial: true
+    frontend_python: /opt/xiaoyou04-frontend/bin/python
     speed: 1.0
     warmup: true
   echo_cancellation:

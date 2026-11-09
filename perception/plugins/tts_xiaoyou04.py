@@ -13,6 +13,10 @@ def _adapter(cfg, on_status=None):
 
 
 class TTSPlugin(SherpaOnnxTTSPlugin):
+    # The evaluator's TTS_PLUGIN is a tool name, while the product uses `tts`.
+    # Bundle routing canonicalizes this alias before dispatch.
+    ALIASES = ("tts_xiaoyou04",)
+
     def __init__(self, plugin_cfg, executor):
         self._lifecycle_lock = threading.RLock()
         # The default config.yaml names the public VITS2 model directory. A
@@ -36,10 +40,18 @@ class TTSPlugin(SherpaOnnxTTSPlugin):
         return tools
 
     def dispatch(self, name, args):
+        if name in self.ALIASES:
+            name = self.PREFIX
         action = args.get("action") if name == "tts" else name
         if action == "support_language":
             return {"engine": "kokoro-xiaoyou04-zh-en", "languages": ["zh", "en", "mixed"]}
         if action == "config":
+            args = dict(args)
+            # Darvin sends empty cloud-TTS fields even for an on-device model.
+            # Empty placeholders are a no-op; nonempty cloud settings are errors.
+            for key in ("api_key", "model", "voice", "url"):
+                if key in args and args[key] in ("", None):
+                    args.pop(key)
             unsupported = set(args) - {"action", "instance_id", "speed"}
             if unsupported:
                 raise ValueError("Xiaoyou 04 supports only speed configuration; unexpected: "
@@ -56,6 +68,7 @@ class TTSPlugin(SherpaOnnxTTSPlugin):
                 result["providers"] = adapter.providers
                 result["release_checkpoint_sha256"] = adapter.release["source_checkpoint_sha256"]
                 result["diagnostic_trial"] = bool(adapter.release.get("diagnostic_trial", False))
+                result["release_model_sha256"] = adapter.release.get("files", {}).get("model.onnx", {}).get("sha256")
             return result
         with self._lifecycle_lock:
             return super().dispatch(name, args)

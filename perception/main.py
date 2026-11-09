@@ -153,7 +153,10 @@ class PerceptionBundle:
             # does not appear, which is visible in the dashboard.
             try:
                 import importlib
-                plugin_name = os.environ.get("TTS_PLUGIN") or "tts"
+                # Darvin may forward TTS_PLUGIN to its evaluation process only.
+                # The checked-in profile must also identify the implementation.
+                plugin_name = (os.environ.get("TTS_PLUGIN")
+                               or plugins_cfg["tts"].get("plugin") or "tts")
                 if not plugin_name.isidentifier():
                     raise ValueError("TTS_PLUGIN must name a module under plugins")
                 TTSPlugin = importlib.import_module(

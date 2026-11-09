@@ -43,23 +43,36 @@ def test_main_binds_environment_ports_before_yaml_defaults(monkeypatch, environm
     assert (observed["mcp"], observed["ws"]) == expected
 
 
-@pytest.mark.parametrize("selected", [None, "tts_xiaoyou04"])
-def test_plugin_selection_keeps_default_and_uses_the_selected_module(monkeypatch, selected):
+@pytest.mark.parametrize("selected,profile_plugin,expected", [
+    (None, None, "default"),
+    ("tts_xiaoyou04", None, "xiaoyou"),
+    (None, "tts_xiaoyou04", "xiaoyou"),
+    ("", "tts_xiaoyou04", "xiaoyou"),
+    ("tts", "tts_xiaoyou04", "default"),
+])
+def test_plugin_selection_keeps_default_and_uses_the_selected_module(monkeypatch, selected, profile_plugin, expected):
     class Plugin:
         PREFIX = "tts"
         def __init__(self, cfg, executor):
             self.cfg = cfg
     import plugins.tts
-    monkeypatch.setattr(plugins.tts, "TTSPlugin", Plugin)
-    monkeypatch.setitem(sys.modules, "plugins.tts_xiaoyou04", SimpleNamespace(TTSPlugin=Plugin))
+    class DefaultPlugin(Plugin):
+        implementation = "default"
+    class XiaoyouPlugin(Plugin):
+        implementation = "xiaoyou"
+    monkeypatch.setattr(plugins.tts, "TTSPlugin", DefaultPlugin)
+    monkeypatch.setitem(sys.modules, "plugins.tts_xiaoyou04", SimpleNamespace(TTSPlugin=XiaoyouPlugin))
     if selected is None:
         monkeypatch.delenv("TTS_PLUGIN", raising=False)
     else:
         monkeypatch.setenv("TTS_PLUGIN", selected)
     cfg = {"plugins": {"tts": {"enabled": True}, "echo_cancellation": {"enabled": False},
                        "audio_mixer": {"enabled": False}}}
+    if profile_plugin:
+        cfg["plugins"]["tts"]["plugin"] = profile_plugin
     bundle = main.PerceptionBundle(cfg, None)
     assert len(bundle._plugins) == 1 and isinstance(bundle._plugins[0], Plugin)
+    assert bundle._plugins[0].implementation == expected
 
 
 def test_unavailable_selected_plugin_does_not_substitute_a_different_voice(monkeypatch):

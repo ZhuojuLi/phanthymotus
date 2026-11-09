@@ -281,15 +281,52 @@ def test_selected_plugin_keeps_its_factory_during_config_and_cleans_up(monkeypat
     assert instances[0].closed
 
 
+def test_evaluator_alias_and_empty_cloud_config_reach_the_resident_model(monkeypatch):
+    """Replay the actual first request which failed on Darvin, without loading weights."""
+    import main
+    from plugins import tts_xiaoyou04 as module
+    from vision_stubs import _FakeExecutor
+    calls = []
+    class Adapter:
+        providers = ["CUDAExecutionProvider"]
+        release = {"source_checkpoint_sha256": "b" * 64, "diagnostic_trial": True}
+        def set_speed(self, value): pass
+        def close(self): pass
+    monkeypatch.setattr(module, "_adapter", lambda cfg, on_status=None: calls.append(cfg) or Adapter())
+    monkeypatch.delenv("TTS_PLUGIN", raising=False)
+    cfg = {"plugins": {"tts": {"enabled": True, "plugin": "tts_xiaoyou04", "warmup": False},
+                       "echo_cancellation": {"enabled": False}, "audio_mixer": {"enabled": False}}}
+    bundle = main.PerceptionBundle(cfg, _FakeExecutor())
+    try:
+        assert [tool["name"] for tool in bundle.get_all_tools()] == ["tts"]
+        request = {"action": "config", "instance_id": "tts_eval_shared",
+                   "api_key": "", "model": "", "voice": "", "url": ""}
+        for tool_name in ["tts_xiaoyou04", "tts"]:
+            assert bundle.owns(tool_name)
+            assert bundle.dispatch(tool_name, request) == {"status": "configured", "rebuilt": False}
+            info = bundle.dispatch(tool_name, {"action": "info"})
+            assert info["voice"] == "04" and info["diagnostic_trial"] is True
+        assert len(calls) == 1, "Empty evaluator config must not reload the model"
+        for key in ["api_key", "model", "voice", "url"]:
+            with pytest.raises(ValueError, match="unexpected"):
+                bundle.dispatch("tts_xiaoyou04", {"action": "config", key: "nonempty"})
+    finally:
+        bundle.shutdown()
+
+
 def test_release_profile_enables_only_tts():
     import yaml
     profile = yaml.safe_load((Path(__file__).parents[1] / "plugins/xiaoyou04/config.yaml").read_text())
     enabled = {k for k, v in profile["plugins"].items() if v.get("enabled")}
     assert enabled == {"tts"}
+    default = yaml.safe_load((Path(__file__).parents[1] / "config.yaml").read_text())
+    assert default == profile
+    assert default["plugins"]["tts"]["plugin"] == "tts_xiaoyou04"
+    assert default["plugins"]["tts"]["allow_diagnostic_trial"] is True
 
 
-@pytest.mark.parametrize("diagnostic", [False, True])
-def test_real_onnx_worker_with_cold_download_and_warm_cache(monkeypatch, tmp_path, diagnostic):
+@pytest.mark.parametrize("diagnostic,profile_opt_in", [(False, False), (True, False), (True, True)])
+def test_real_onnx_worker_with_cold_download_and_warm_cache(monkeypatch, tmp_path, diagnostic, profile_opt_in):
     """A tiny synthetic graph proves transport/packaging, not voice or device quality."""
     onnx = pytest.importorskip("onnx")
     pytest.importorskip("onnxruntime")
@@ -342,13 +379,17 @@ def test_real_onnx_worker_with_cold_download_and_warm_cache(monkeypatch, tmp_pat
     monkeypatch.setenv("XIAOYOU04_RELEASE_SPEC", str(descriptor))
     monkeypatch.setenv("XIAOYOU04_FRONTEND_PYTHON", sys.executable)
     runtime = None
+    runtime_cfg = {"model_dir": str(tmp_path / "cache"), "device": "cpu"}
     try:
         if diagnostic:
             with pytest.raises(RuntimeError, match="XIAOYOU04_ALLOW_DIAGNOSTIC"):
                 Xiaoyou04Runtime({"model_dir": str(tmp_path / "cache"), "device": "cpu"})
             assert not (tmp_path / "cache").exists()
-            monkeypatch.setenv("XIAOYOU04_ALLOW_DIAGNOSTIC", "1")
-        runtime = Xiaoyou04Runtime({"model_dir": str(tmp_path / "cache"), "device": "cpu"})
+            if profile_opt_in:
+                runtime_cfg["allow_diagnostic_trial"] = True
+            else:
+                monkeypatch.setenv("XIAOYOU04_ALLOW_DIAGNOSTIC", "1")
+        runtime = Xiaoyou04Runtime(runtime_cfg)
         assert runtime.providers == ["CPUExecutionProvider"]
         assert len(runtime.synthesize("abc")) == 3200
         cached = runtime.directory
@@ -358,13 +399,13 @@ def test_real_onnx_worker_with_cold_download_and_warm_cache(monkeypatch, tmp_pat
         server.shutdown()
         server.server_close()
         thread.join(timeout=3)
-        runtime = Xiaoyou04Runtime({"model_dir": str(tmp_path / "cache"), "device": "cpu"})
+        runtime = Xiaoyou04Runtime(runtime_cfg)
         assert runtime.directory == cached and len(runtime.synthesize("after restart")) == 3200
         runtime.close()
         runtime = None
         (cached / "model.onnx").write_bytes(b"corrupt cache")
         with pytest.raises(ValueError, match="mismatch"):
-            Xiaoyou04Runtime({"model_dir": str(tmp_path / "cache"), "device": "cpu"})
+            Xiaoyou04Runtime(runtime_cfg)
     finally:
         if runtime is not None:
             runtime.close()
