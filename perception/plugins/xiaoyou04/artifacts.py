@@ -50,6 +50,13 @@ def validate_spec(spec):
             raise ValueError("Every release file must have a size and SHA256")
     if not re.fullmatch(r"[0-9a-f]{64}", str(spec.get("source_checkpoint_sha256", ""))):
         raise ValueError("Release must identify its source checkpoint")
+    if spec.get("diagnostic_trial"):
+        report = files.get("validation_report.json", {})
+        if (spec.get("normal_text_parity_passed") is not False
+                or spec.get("listening_approved") is not False
+                or report.get("sha256") != spec.get("validation_report_sha256")
+                or not re.fullmatch(r"[0-9a-f]{64}", str(spec.get("validation_report_sha256", "")))):
+            raise ValueError("Diagnostic release must retain failed parity and its pinned validation report")
     return spec
 
 
@@ -81,6 +88,8 @@ def ensure_release(model_dir, on_status=None, spec_path=None):
     from utils.model_downloader import ensure_verified_archive
 
     spec = read_spec(spec_path)
+    if spec.get("diagnostic_trial") and os.environ.get("XIAOYOU04_ALLOW_DIAGNOSTIC") != "1":
+        raise RuntimeError("Diagnostic Xiaoyou 04 release requires explicit XIAOYOU04_ALLOW_DIAGNOSTIC=1")
     # A version gets its own directory; an update cannot mix with an old cache.
     archive = spec.get("archive", {})
     pin = archive.get("sha256", "")

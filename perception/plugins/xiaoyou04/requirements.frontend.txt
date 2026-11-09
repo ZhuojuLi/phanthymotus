@@ -1,6 +1,17 @@
 # Install in a dedicated Python 3.11 environment, separate from ROS and ORT.
 # en_core_web_sm and the exact frontend.py/config.json travel with the release.
-misaki[en,zh]==0.9.4
+# The frozen frontend uses en.G2P(trf=False), with the released small spaCy
+# model. Installing Misaki's broad "en" extra adds an unused transformer and
+# a second CUDA/PyTorch stack; list only the dependencies actually imported.
+misaki[zh]==0.9.4
+num2words==0.5.14
+addict==2.4.0
+regex==2026.11.7
+cn2an==0.5.23
+jieba==0.42.1
+ordered-set==4.1.0
+pypinyin==0.55.0
+pypinyin-dict==0.9.0
 numpy==1.26.4
 spacy==3.8.16
 phonemizer-fork==3.3.2

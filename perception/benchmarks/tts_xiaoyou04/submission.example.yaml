@@ -1,4 +1,4 @@
-# Preparation template. Replace the commit only after model binding, push and JP validation.
+# Diagnostic trial template. Replace the commit after push and device checks.
 env:
   - name: PHANTHYMOTUS_COMMIT_ID
     value: "REPLACE_WITH_VERIFIED_PUSHED_40_CHARACTER_COMMIT"
@@ -10,5 +10,7 @@ env:
     value: "/work/plugins/xiaoyou04/config.yaml"
   - name: XIAOYOU04_FRONTEND_PYTHON
     value: "/opt/xiaoyou04-frontend/bin/python"
+  - name: XIAOYOU04_ALLOW_DIAGNOSTIC
+    value: "1"
   - name: JP_VERSION
     value: "6"

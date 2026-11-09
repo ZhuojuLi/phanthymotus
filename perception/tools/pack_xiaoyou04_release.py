@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Pack an already exported and verified ONNX model; never export a baseline voice."""
+"""Pack a verified export, or an explicitly identified diagnostic trial."""
 from __future__ import annotations
 
 import argparse
@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from plugins.xiaoyou04.artifacts import SCHEMA, sha256, validate_directory, validate_spec
 
 
-def pack(source, archive, descriptor, url):
+def pack(source, archive, descriptor, url, diagnostic_trial=False):
     import onnx
 
     source, archive, descriptor = map(lambda p: Path(p).resolve(), (source, archive, descriptor))
@@ -24,8 +24,22 @@ def pack(source, archive, descriptor, url):
         raise ValueError("Export identity must identify the trained Xiaoyou 04 model")
     if identity.get("precision") != "FP32" or identity.get("sample_rate") != 24000:
         raise ValueError("Only the FP32, 24000 Hz export is supported")
-    if identity.get("normal_text_parity_passed") is not True:
+    if identity.get("normal_text_parity_passed") is not True and not diagnostic_trial:
         raise ValueError("Normal-text native/ONNX parity must pass before packing")
+    if diagnostic_trial:
+        if (identity.get("diagnostic_trial") is not True
+                or identity.get("normal_text_parity_passed") is not False
+                or identity.get("listening_approved") is not False):
+            raise ValueError("Diagnostic trials must explicitly preserve pending parity and listening acceptance")
+        report_path = source / "validation_report.json"
+        if sha256(report_path) != identity.get("validation_report_sha256"):
+            raise ValueError("Diagnostic trial requires a pinned validation report")
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        if (report.get("model_sha256") != identity.get("export_sha256", {}).get("model.onnx")
+                or report.get("source_checkpoint_sha256") != identity.get("source_checkpoint_sha256")
+                or report.get("full_waveform_parity_passed") is not False
+                or not report.get("known_limitations")):
+            raise ValueError("Diagnostic validation report must identify the tested model and unresolved failures")
     # The export check signs the actual graph, frontend, config and fixed voice.
     for name in ["model.onnx", "frontend.py", "config.json", "voice.npy"]:
         if sha256(source / name) != identity.get("export_sha256", {}).get(name):
@@ -62,7 +76,10 @@ def pack(source, archive, descriptor, url):
     spec = dict(schema=SCHEMA, status="candidate", voice="04", architecture="Kokoro82M_v1.0",
                 sample_rate=24000, precision="FP32", chunk_tokens=120,
                 source_checkpoint_sha256=identity["source_checkpoint_sha256"], files=files,
-                listening_approved=identity.get("listening_approved", False))
+                listening_approved=identity.get("listening_approved", False),
+                normal_text_parity_passed=identity.get("normal_text_parity_passed") is True)
+    if diagnostic_trial:
+        spec.update(diagnostic_trial=True, validation_report_sha256=identity["validation_report_sha256"])
     validate_spec(spec)
     validate_directory(source, spec)
     archive.parent.mkdir(parents=True, exist_ok=True)
@@ -85,8 +102,10 @@ def main():
     parser.add_argument("--archive", type=Path, required=True)
     parser.add_argument("--descriptor", type=Path, required=True)
     parser.add_argument("--url", required=True, help="Versioned JuiceFS HTTP URL; upload and round-trip verification are separate steps")
+    parser.add_argument("--diagnostic-trial", action="store_true",
+                        help="Explicit experimental submission with pinned failures; runtime requires XIAOYOU04_ALLOW_DIAGNOSTIC=1")
     args = parser.parse_args()
-    spec = pack(args.source, args.archive, args.descriptor, args.url)
+    spec = pack(args.source, args.archive, args.descriptor, args.url, diagnostic_trial=args.diagnostic_trial)
     print(json.dumps({"archive": spec["archive"], "files": len(spec["files"]),
                       "status": "candidate", "uploaded": False}, ensure_ascii=False, indent=2))
 

@@ -55,6 +55,7 @@ class TTSPlugin(SherpaOnnxTTSPlugin):
             if adapter is not None:
                 result["providers"] = adapter.providers
                 result["release_checkpoint_sha256"] = adapter.release["source_checkpoint_sha256"]
+                result["diagnostic_trial"] = bool(adapter.release.get("diagnostic_trial", False))
             return result
         with self._lifecycle_lock:
             return super().dispatch(name, args)

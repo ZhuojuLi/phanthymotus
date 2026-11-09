@@ -1,7 +1,225 @@
 {
   "schema": "xiaoyou04-release-v1",
-  "status": "preparing",
+  "status": "candidate",
   "voice": "04",
   "architecture": "Kokoro82M_v1.0",
-  "reason": "Training and listening acceptance are in progress. Bind the verified ONNX release after export; no baseline voice is substituted."
+  "sample_rate": 24000,
+  "precision": "FP32",
+  "chunk_tokens": 120,
+  "source_checkpoint_sha256": "d8b87fd88b96e340efe0745e01654465c6303ce023077d325a0c7a2992a5c2e2",
+  "files": {
+    "NOTICE.txt": {
+      "size": 619,
+      "sha256": "f42ec101c8b57996d58eecf4f75bd7f8b0533913b06e0e5a4a0479e7544b420d"
+    },
+    "config.json": {
+      "size": 2351,
+      "sha256": "5abb01e2403b072bf03d04fde160443e209d7a0dad49a423be15196b9b43c17f"
+    },
+    "export_identity.json": {
+      "size": 910,
+      "sha256": "817da645421c5e85f77f681c77659d5b9fd0cd5222d183fc9258b50b546161a5"
+    },
+    "frontend.py": {
+      "size": 2006,
+      "sha256": "a3de6076f187fe37d5576bdfc5cdc2024ee923f7b6ef5bca916522f1b31695ae"
+    },
+    "licenses/kokoro-implementation-LICENSE.txt": {
+      "size": 11357,
+      "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+    },
+    "licenses/styletts2-LICENSE.txt": {
+      "size": 1075,
+      "sha256": "7f023c12a1d6b25583506f6fc77f5287c7c71b65c0f886922f14153bcc07dfa9"
+    },
+    "model.onnx": {
+      "size": 325576887,
+      "sha256": "ffc8ecc6760886197d30545e643e849085c045eefcef594ea22c4d1676b1bc9e"
+    },
+    "validation/full-waveform-cpu.json": {
+      "size": 11446,
+      "sha256": "8ea8bbbc62aa3772f293b3d7bb864d6d61886a08ad2cdaadf978824e78bea5c4"
+    },
+    "validation/jp6-token-gpu.json": {
+      "size": 2475,
+      "sha256": "42415c9c8f4f1f7b812a0b9ca3dbae0898f017a9e772d3983c5b73064f2b9f0a"
+    },
+    "validation/native-cpu-vs-cuda.json": {
+      "size": 3394,
+      "sha256": "6c0bd6872bff4f856fbbc271cd546959d28dfaa1ee7da5abc5cc8cbb9c9cc59e"
+    },
+    "validation/stage-parity.json": {
+      "size": 10502,
+      "sha256": "099ab671723916350ba3e804f836552c0986aed92a14f357e0046e044c480825"
+    },
+    "validation_report.json": {
+      "size": 1343,
+      "sha256": "653a69c73424bfe57b53e061660d7a18452d59c234891e6aff9da299a09bbb29"
+    },
+    "vendor/en_core_web_sm/__init__.py": {
+      "size": 237,
+      "sha256": "c8eb57079c03fc4157c227f641781fbcb3e9d11439abe1bf0b72e4c0fa78a38d"
+    },
+    "vendor/en_core_web_sm/en_core_web_sm-3.8.0/LICENSE": {
+      "size": 1056,
+      "sha256": "3933c176979b68bc6d0bcc902c7d6c130f1d127f476f17ba5cdba8d99cfd0012"
+    },
+    "vendor/en_core_web_sm/en_core_web_sm-3.8.0/LICENSES_SOURCES": {
+      "size": 2347,
+      "sha256": "20d9dfacd215112251f15341edd1a47b1f98bf393a212f10f194ffdc7ee98a90"
+    },
+    "vendor/en_core_web_sm/en_core_web_sm-3.8.0/README.md": {
+      "size": 2587,
+      "sha256": "91b0ed1742ea0803034b4d769c4536e88d9d4da7808d833f2a804b6c54aae220"
+    },
+    "vendor/en_core_web_sm/en_core_web_sm-3.8.0/accuracy.json": {
+      "size": 6341,
+      "sha256": "e7572d7f2f3c18e9921471f9d0b3424f8cf7f1a909ae484fa10b780a13f4c676"
+    },
+    "vendor/en_core_web_sm/en_core_web_sm-3.8.0/attribute_ruler/patterns": {
+      "size": 14735,
+      "sha256": "f8b97f7ebef9b8536bba5f0fc1e73af6183563e96e2325bcbb021b8c6dbc6683"
+    },
+    "vendor/en_core_web_sm/en_core_web_sm-3.8.0/config.cfg": {
+      "size": 5527,
+      "sha256": "65c545ca2da5bd4b87b22d4917318605360b37dee6ed6b18516a036f87319f79"
+    },
+    "vendor/en_core_web_sm/en_core_web_sm-3.8.0/lemmatizer/lookups/lookups.bin": {
+      "size": 972893,
+      "sha256": "eb64f40c0f8396d1762730c0ddf4dad2a52d138f5a389f71a1a1d088173b7737"
+    },
+    "vendor/en_core_web_sm/en_core_web_sm-3.8.0/meta.json": {
+      "size": 10106,
+      "sha256": "7456349002fa8cf31111051bd37fdbea67a1b7f7a0a60ce235466f98a6758125"
+    },
+    "vendor/en_core_web_sm/en_core_web_sm-3.8.0/ner/cfg": {
+      "size": 221,
+      "sha256": "a7172edadafba9f472e9ac0f2660eec04b6405e471be9e20267b79c67288d22d"
+    },
+    "vendor/en_core_web_sm/en_core_web_sm-3.8.0/ner/model": {
+      "size": 6154601,
+      "sha256": "cd93e9ca9126c69f1d10a1039ef67c3d9ec1223b44d079856705970f0f19ff4e"
+    },
+    "vendor/en_core_web_sm/en_core_web_sm-3.8.0/ner/moves": {
+      "size": 1064,
+      "sha256": "d82b13473ebd33e0396004dd22f00c71fe3c1251742bf1f7c4554f23fd3b0af4"
+    },
+    "vendor/en_core_web_sm/en_core_web_sm-3.8.0/parser/cfg": {
+      "size": 222,
+      "sha256": "e2a240ef01f95e58f5dd4c9d6e90d61f597b8d998966570d3009dd81e8879780"
+    },
+    "vendor/en_core_web_sm/en_core_web_sm-3.8.0/parser/model": {
+      "size": 319909,
+      "sha256": "e0098910535a863d430082ece57455d5fa071cd4ca3a0054e80582076c752b1e"
+    },
+    "vendor/en_core_web_sm/en_core_web_sm-3.8.0/parser/moves": {
+      "size": 1571,
+      "sha256": "ec41318c32eb7f9e4d8f050b2e8466ee67954d2d3455c1aec73abf46c82dd67f"
+    },
+    "vendor/en_core_web_sm/en_core_web_sm-3.8.0/senter/cfg": {
+      "size": 23,
+      "sha256": "2a4db4a729b6469da1f87d71cc7cd3ed2a73360cc85326821e850836c4671103"
+    },
+    "vendor/en_core_web_sm/en_core_web_sm-3.8.0/senter/model": {
+      "size": 197089,
+      "sha256": "b69e7174a0b6307739adec3c8053ac45fdbad7171c4d3d8bfcd9713ecbc01f8c"
+    },
+    "vendor/en_core_web_sm/en_core_web_sm-3.8.0/tagger/cfg": {
+      "size": 615,
+      "sha256": "d484c3d9391f37bf9c727aa2eb4c477a24cb103020f95e52dc37842818b50118"
+    },
+    "vendor/en_core_web_sm/en_core_web_sm-3.8.0/tagger/model": {
+      "size": 19829,
+      "sha256": "1ec3d93f38cebe172f2b5c89d84be72856ce42c8f1a64f1699f1d98a771f36b7"
+    },
+    "vendor/en_core_web_sm/en_core_web_sm-3.8.0/tok2vec/cfg": {
+      "size": 4,
+      "sha256": "f8a5a26e3056eb6fb06deeb3dbccfd88ae74900200c98c70b5966bbb7ec9d4de"
+    },
+    "vendor/en_core_web_sm/en_core_web_sm-3.8.0/tok2vec/model": {
+      "size": 6269370,
+      "sha256": "e84fc06eb319c94d28e460fc334e292120b01f18baa5dc8b50c977459820a090"
+    },
+    "vendor/en_core_web_sm/en_core_web_sm-3.8.0/tokenizer": {
+      "size": 77066,
+      "sha256": "b014e8bba4958b120af2d0c1c63eabb7c00379f2bacaf10df7c5325efd2ea467"
+    },
+    "vendor/en_core_web_sm/en_core_web_sm-3.8.0/vocab/key2row": {
+      "size": 1,
+      "sha256": "76be8b528d0075f7aae98d6fa57a6d3c83ae480a8469e668d7b0af968995ac71"
+    },
+    "vendor/en_core_web_sm/en_core_web_sm-3.8.0/vocab/lookups.bin": {
+      "size": 70040,
+      "sha256": "fce9c883c56165f29573cc938c2a1c9d417ac61bd8f56b671dd5f7996de70682"
+    },
+    "vendor/en_core_web_sm/en_core_web_sm-3.8.0/vocab/strings.json": {
+      "size": 1103983,
+      "sha256": "b1966d1f07a05b68576df07f43f40203b4e11124ad82cc839e8312ad8d7fdae7"
+    },
+    "vendor/en_core_web_sm/en_core_web_sm-3.8.0/vocab/vectors": {
+      "size": 128,
+      "sha256": "14772b683e726436d5948ad3fff2b43d036ef2ebbe3458aafed6004e05a40706"
+    },
+    "vendor/en_core_web_sm/en_core_web_sm-3.8.0/vocab/vectors.cfg": {
+      "size": 22,
+      "sha256": "ff4359091952c8cd16f1f0482f5770fb82d1707368d5cca3c46aa501f552e3c5"
+    },
+    "vendor/en_core_web_sm/meta.json": {
+      "size": 10106,
+      "sha256": "7456349002fa8cf31111051bd37fdbea67a1b7f7a0a60ce235466f98a6758125"
+    },
+    "vendor/en_core_web_sm-3.8.0.dist-info/INSTALLER": {
+      "size": 4,
+      "sha256": "ceebae7b8927a3227e5303cf5e0f1f7b34bb542ad7250ac03fbcde36ec2f1508"
+    },
+    "vendor/en_core_web_sm-3.8.0.dist-info/LICENSE": {
+      "size": 1056,
+      "sha256": "3933c176979b68bc6d0bcc902c7d6c130f1d127f476f17ba5cdba8d99cfd0012"
+    },
+    "vendor/en_core_web_sm-3.8.0.dist-info/LICENSES_SOURCES": {
+      "size": 2347,
+      "sha256": "20d9dfacd215112251f15341edd1a47b1f98bf393a212f10f194ffdc7ee98a90"
+    },
+    "vendor/en_core_web_sm-3.8.0.dist-info/METADATA": {
+      "size": 2922,
+      "sha256": "a19f30538c12b7fd15f390c55335990847e2f3f67eeb984a3257a40b2f9cb2ff"
+    },
+    "vendor/en_core_web_sm-3.8.0.dist-info/RECORD": {
+      "size": 3875,
+      "sha256": "4d517b5a627a1aadaa2dfd16076e3b135a5a1ca83ab2744c87187a008c9096b6"
+    },
+    "vendor/en_core_web_sm-3.8.0.dist-info/REQUESTED": {
+      "size": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "vendor/en_core_web_sm-3.8.0.dist-info/WHEEL": {
+      "size": 91,
+      "sha256": "195f5a3138703ffe28342b6f102d9e737a9462eb6059e033925ae8ff49b85894"
+    },
+    "vendor/en_core_web_sm-3.8.0.dist-info/direct_url.json": {
+      "size": 322,
+      "sha256": "1eb6cb0170bcb2d6c5f0859ac09d19d40cc5eb31e686c60c7100f83d6eaf26fb"
+    },
+    "vendor/en_core_web_sm-3.8.0.dist-info/entry_points.txt": {
+      "size": 47,
+      "sha256": "3a45acf8ac4f26d0dda6f2050955f30c2f440ad7a384fc6fee93f74e093670d8"
+    },
+    "vendor/en_core_web_sm-3.8.0.dist-info/top_level.txt": {
+      "size": 15,
+      "sha256": "e7a388b916c4ba1af5d87b0cf57a423274ed1d1320342e478dee177a8f301767"
+    },
+    "voice.npy": {
+      "size": 1152,
+      "sha256": "65e92aad67d98f7a2c13a0a3d5593b3097fff7d06653c12808132a310a68ea7d"
+    }
+  },
+  "listening_approved": false,
+  "normal_text_parity_passed": false,
+  "diagnostic_trial": true,
+  "validation_report_sha256": "653a69c73424bfe57b53e061660d7a18452d59c234891e6aff9da299a09bbb29",
+  "archive": {
+    "url": "http://172.28.4.81:34567/lizhuoju/embodied-ai/tts/xiaoyou04/g25832-ffc8ecc676-diagnostic/model.tar.gz",
+    "size": 314340292,
+    "sha256": "6ac2560846021cfeead3414db3b4a18ae3a2a1cb2faab34e20300389053d5c00"
+  }
 }

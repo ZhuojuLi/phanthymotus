@@ -50,9 +50,11 @@ def release_directory(tmp_path):
     return tmp_path, spec
 
 
-def test_unbound_release_is_an_explicit_error():
+def test_unbound_release_is_an_explicit_error(tmp_path):
+    spec = tmp_path / "release.json"
+    spec.write_text(json.dumps({"schema": artifacts.SCHEMA, "voice": "04", "status": "preparing"}))
     with pytest.raises(RuntimeError, match="not bound yet"):
-        artifacts.read_spec()
+        artifacts.read_spec(spec)
 
 
 def test_release_checks_voice_vocabulary_and_every_pinned_file(release_directory):
@@ -91,6 +93,40 @@ def test_release_must_identify_its_exact_source_checkpoint(release_directory):
         artifacts.validate_spec(spec)
 
 
+@pytest.mark.parametrize("failure", ["missing_opt_in", "wrong_hash", "wrong_model", "wrong_checkpoint",
+                                     "hidden_failures", "no_limitations", "fake_listening_pass"])
+def test_diagnostic_pack_rejects_missing_or_mismatched_evidence(release_directory, tmp_path, failure):
+    pytest.importorskip("onnx")
+    from tools.pack_xiaoyou04_release import pack
+    source, spec = release_directory
+    report = {"model_sha256": spec["files"]["model.onnx"]["sha256"],
+              "source_checkpoint_sha256": spec["source_checkpoint_sha256"],
+              "full_waveform_parity_passed": False, "known_limitations": ["Unverified fixture"]}
+    if failure == "wrong_model":
+        report["model_sha256"] = "b" * 64
+    elif failure == "wrong_checkpoint":
+        report["source_checkpoint_sha256"] = "b" * 64
+    elif failure == "hidden_failures":
+        report["full_waveform_parity_passed"] = True
+    elif failure == "no_limitations":
+        report["known_limitations"] = []
+    (source / "validation_report.json").write_text(json.dumps(report))
+    identity = {"voice": "04", "architecture": "Kokoro82M_v1.0", "precision": "FP32",
+                "sample_rate": 24000, "diagnostic_trial": failure != "missing_opt_in",
+                "normal_text_parity_passed": False, "listening_approved": failure == "fake_listening_pass",
+                "source_checkpoint_sha256": spec["source_checkpoint_sha256"],
+                "validation_report_sha256": artifacts.sha256(source / "validation_report.json"),
+                "export_sha256": {name: spec["files"][name]["sha256"] for name in artifacts.REQUIRED}}
+    if failure == "wrong_hash":
+        identity["validation_report_sha256"] = "b" * 64
+    (source / "export_identity.json").write_text(json.dumps(identity))
+    archive = tmp_path.with_name(tmp_path.name + "-rejected.tar.gz")
+    descriptor = tmp_path.with_name(tmp_path.name + "-rejected.json")
+    with pytest.raises(ValueError, match="Diagnostic"):
+        pack(source, archive, descriptor, "http://example.invalid/rejected.tar.gz", diagnostic_trial=True)
+    assert not archive.exists() and not descriptor.exists()
+
+
 def test_frontend_protocol_survives_diagnostics_and_bad_inputs(release_directory):
     directory, _ = release_directory
     worker = FrontendClient(directory, python=sys.executable, timeout=5)
@@ -107,14 +143,16 @@ def test_frontend_protocol_survives_diagnostics_and_bad_inputs(release_directory
     assert not temporary.exists()
 
 
-def test_preparing_release_does_not_install_a_frontend_environment(monkeypatch):
+def test_preparing_release_does_not_install_a_frontend_environment(monkeypatch, tmp_path):
     import importlib.util
     script = Path(__file__).parents[1] / "deploy/setup_xiaoyou04_frontend.py"
     spec = importlib.util.spec_from_file_location("setup_xiaoyou04_frontend", script)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     root = Path(__file__).parents[1] / "plugins/xiaoyou04"
-    monkeypatch.setattr(sys, "argv", [str(script), "--release-spec", str(root / "release.json"),
+    release = tmp_path / "release.json"
+    release.write_text(json.dumps({"status": "preparing"}))
+    monkeypatch.setattr(sys, "argv", [str(script), "--release-spec", str(release),
                                       "--requirements", str(root / "requirements.frontend.txt")])
     def unexpected_install(*args, **kwargs):
         raise AssertionError("An unbound release must not install dependencies")
@@ -250,7 +288,8 @@ def test_release_profile_enables_only_tts():
     assert enabled == {"tts"}
 
 
-def test_real_onnx_worker_with_cold_download_and_warm_cache(monkeypatch, tmp_path):
+@pytest.mark.parametrize("diagnostic", [False, True])
+def test_real_onnx_worker_with_cold_download_and_warm_cache(monkeypatch, tmp_path, diagnostic):
     """A tiny synthetic graph proves transport/packaging, not voice or device quality."""
     onnx = pytest.importorskip("onnx")
     pytest.importorskip("onnxruntime")
@@ -277,7 +316,19 @@ def test_real_onnx_worker_with_cold_download_and_warm_cache(monkeypatch, tmp_pat
                 "source_checkpoint_sha256": "a" * 64,
                 "export_sha256": {name: artifacts.sha256(source / name)
                                    for name in ["model.onnx", "frontend.py", "config.json", "voice.npy"]}}
+    if diagnostic:
+        identity.update(normal_text_parity_passed=False, diagnostic_trial=True, listening_approved=False)
+        report = {"model_sha256": identity["export_sha256"]["model.onnx"],
+                  "source_checkpoint_sha256": identity["source_checkpoint_sha256"],
+                  "full_waveform_parity_passed": False,
+                  "known_limitations": ["Synthetic transport fixture; not a validated TTS model"]}
+        (source / "validation_report.json").write_text(json.dumps(report))
+        identity["validation_report_sha256"] = artifacts.sha256(source / "validation_report.json")
     (source / "export_identity.json").write_text(json.dumps(identity))
+    if diagnostic:
+        with pytest.raises(ValueError, match="parity must pass"):
+            pack(source, tmp_path / "must-not-exist.tar.gz", tmp_path / "must-not-exist.json", "http://example.invalid/model.tar.gz")
+        assert not (tmp_path / "must-not-exist.tar.gz").exists()
     class Handler(SimpleHTTPRequestHandler):
         def log_message(self, *args):
             pass
@@ -287,11 +338,16 @@ def test_real_onnx_worker_with_cold_download_and_warm_cache(monkeypatch, tmp_pat
     descriptor = tmp_path / "release.json"
     archive = tmp_path / "fixture.tar.gz"
     url = f"http://127.0.0.1:{server.server_address[1]}/fixture.tar.gz"
-    pack(source, archive, descriptor, url)
+    pack(source, archive, descriptor, url, diagnostic_trial=diagnostic)
     monkeypatch.setenv("XIAOYOU04_RELEASE_SPEC", str(descriptor))
     monkeypatch.setenv("XIAOYOU04_FRONTEND_PYTHON", sys.executable)
     runtime = None
     try:
+        if diagnostic:
+            with pytest.raises(RuntimeError, match="XIAOYOU04_ALLOW_DIAGNOSTIC"):
+                Xiaoyou04Runtime({"model_dir": str(tmp_path / "cache"), "device": "cpu"})
+            assert not (tmp_path / "cache").exists()
+            monkeypatch.setenv("XIAOYOU04_ALLOW_DIAGNOSTIC", "1")
         runtime = Xiaoyou04Runtime({"model_dir": str(tmp_path / "cache"), "device": "cpu"})
         assert runtime.providers == ["CPUExecutionProvider"]
         assert len(runtime.synthesize("abc")) == 3200

@@ -28,9 +28,15 @@ def main():
     mirror = os.environ.get("PYPI_MIRROR", "https://pypi.org/simple")
     subprocess.run([sys.executable, "-m", "pip", "install", "--no-cache-dir", "--prefix",
                     str(args.bootstrap), "--index-url", mirror, "uv==" + UV_VERSION], check=True)
-    uv = str(args.bootstrap / "bin/uv")
+    # Debian's patched pip scheme adds local/bin under --prefix on JP6,
+    # whereas JP5 places scripts directly under bin.
+    uv = next((str(path) for path in [args.bootstrap / "bin/uv", args.bootstrap / "local/bin/uv"]
+               if path.is_file()), None)
+    if uv is None:
+        raise FileNotFoundError("uv binary missing from the frontend bootstrap prefix")
     environment = dict(os.environ, UV_PYTHON_INSTALL_DIR=str(args.python_root),
-                       UV_NATIVE_TLS="true", UV_NO_PROGRESS="1", UV_HTTP_TIMEOUT="120")
+                       UV_SYSTEM_CERTS="true", UV_NO_PROGRESS="1", UV_HTTP_TIMEOUT="120",
+                       UV_CACHE_DIR="/tmp/xiaoyou04-uv-cache")
     subprocess.run([uv, "python", "install", PYTHON_VERSION], check=True, env=environment)
     subprocess.run([uv, "venv", "--managed-python", "--python", PYTHON_VERSION, str(args.prefix)],
                    check=True, env=environment)
@@ -42,6 +48,8 @@ def main():
              "assert m.version('misaki')=='0.9.4';assert m.version('spacy')=='3.8.16';"
              "print('[build] Xiaoyou 04 frontend dependencies ready; release model data loads at runtime')")
     subprocess.run([python, "-c", probe], check=True, env=environment)
+    import shutil
+    shutil.rmtree(environment["UV_CACHE_DIR"], ignore_errors=True)
 
 
 if __name__ == "__main__":
