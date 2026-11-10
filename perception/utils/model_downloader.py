@@ -1273,29 +1273,35 @@ VISION_MODEL_BASE = os.environ.get("VISION_MODEL_BASE_URL", f"{COS_BASE}/vision"
 # the file that was uploaded — the point of the pin is to catch a bad transfer,
 # and hashing the source cannot. (Same note as THAI_TTS_ARCHIVE / KOKORO.)
 #
-# This submission pins a YOLOE-26m detector with the canonical 220-class vocabulary.
-# Built on Orin inside the JP6.1 perception image (TensorRT 10.4), FP16/640/batch1.
-# JP5 is deliberately unavailable for this candidate: select JP_VERSION="6".
-# An older 144-class JP5 engine must not silently stand in for the M-220 model.
-# B4: frozen B3 weights, one-to-many dense head + class-aware NMS; JP6 only.
-# Built with TensorRT 10.4 on Orin. Artifact bytes are immutable per version.
-# VOP pins are verified by downloading the published JuiceFS HTTP files.
-_VOP_VOCAB = {
-    "size": 3046,
-    "sha256": "a9086a8ad5290a3c6b14e3b73512d4e4a63c9031f4a20d944bb0d7e8a352132f",
-}
-
+# B5: 70% B4 + 30% organizer epoch2; canonical 220 classes.
+# Separate Orin engines for JP5/JP6, pinned by size and SHA256.
 VOP_MODEL_BUNDLES = {
     "jp61": {
-        "base_url": "http://172.28.4.81:34567/lizhuoju/embodied-ai/vop/b4-one2many-20261106/jp61",
+        "base_url": "http://172.28.4.81:34567/lizhuoju/embodied-ai/vop/b5-blend30-20261110/jp61",
         "files": {
             "yoloe-26m-det.engine": {
-                "size": 44860513,
-                "sha256": "489ccbcb040979a50fe3bcba89e843439e74439e0580ec9cd3b58d594abf57d4",
+                "size": 45067393,
+                "sha256": "4fb78b93a48cb4a6ab7eb9b514b6ebdd9f727100e52b86bdeb8ef220b2e33428"
             },
-            "vocab.json": _VOP_VOCAB,
-        },
+            "vocab.json": {
+                "size": 3046,
+                "sha256": "a9086a8ad5290a3c6b14e3b73512d4e4a63c9031f4a20d944bb0d7e8a352132f"
+            }
+        }
     },
+    "jp511": {
+        "base_url": "http://172.28.4.81:34567/lizhuoju/embodied-ai/vop/b5-blend30-20261110/jp511",
+        "files": {
+            "yoloe-26m-det.engine": {
+                "size": 44076517,
+                "sha256": "48def1c137e9d92adcb14218ad1def64b84adae09e0c3afc5c76c94d85e24319"
+            },
+            "vocab.json": {
+                "size": 3046,
+                "sha256": "a9086a8ad5290a3c6b14e3b73512d4e4a63c9031f4a20d944bb0d7e8a352132f"
+            }
+        }
+    }
 }
 
 DEPTH_MODEL_BUNDLES = {
