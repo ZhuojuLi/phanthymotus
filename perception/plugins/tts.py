@@ -1390,6 +1390,8 @@ class _TTSNode(Node):
         self._input_topic  = input_topic or ''
         self._output_topic = f"{input_topic}/tts" if input_topic else '/perception/tts'
         self._adapter      = adapter
+        pacer_for_topic = getattr(adapter, "delivery_pacer_for_topic", None)
+        self._delivery_pacer = pacer_for_topic(self._output_topic) if pacer_for_topic else None
         self.state         = "idle"
         self._text_queue   = queue.Queue()
         self._worker_thread: Optional[threading.Thread] = None
@@ -1583,9 +1585,27 @@ class _TTSNode(Node):
                     self._pub.publish(msg)
                     frames_sent += 1
 
-                def emit(frame: bytes) -> None:
+                def emit(frame: bytes) -> bool:
                     """Pace and publish one frame; latches the clock on the first."""
                     nonlocal t0, t0_wall
+                    if self._delivery_pacer is not None:
+                        # 04 opts into a channel-wide sample clock. Its bounded
+                        # lead is retained across EOF, so consecutive short
+                        # utterances cannot accumulate a fresh burst each time.
+                        while True:
+                            if self._stop_event.is_set() or self._interrupt_flag.is_set():
+                                return False
+                            delay = self._delivery_pacer.delay(len(frame), _time.monotonic())
+                            if delay <= 0:
+                                break
+                            self._interrupt_flag.wait(min(delay, .02))
+                        if t0 is None:
+                            t0 = _time.monotonic()
+                            t0_wall = _time.time()
+                            fire_hook("on_speaking")
+                        publish(frame)
+                        self._delivery_pacer.sent(len(frame), _time.monotonic())
+                        return True
                     if t0 is None:
                         # Backdate by the frames already in the prebuffer so all
                         # of them are due in the past and go out in one burst —
@@ -1601,10 +1621,13 @@ class _TTSNode(Node):
                     # No rebase when behind: publishing immediately is the
                     # catch-up, since the schedule is already ahead of realtime.
                     publish(frame)
+                    return True
 
                 def flush_prebuf() -> None:
                     while prebuf:
-                        emit(prebuf[0])
+                        if not emit(prebuf[0]):
+                            prebuf.clear()
+                            break
                         prebuf.pop(0)
 
                 # 分段：超过 280 字按标点切分，避免超长合成导致延迟或失败。分段是
@@ -1679,7 +1702,9 @@ class _TTSNode(Node):
                         if len(prebuf) >= PREBUF_FRAMES:
                             flush_prebuf()
                         continue
-                    emit(frame)
+                    if not emit(frame):
+                        interrupted = True
+                        break
 
                 cancelled = self._stop_event.is_set() or self._interrupt_flag.is_set()
                 synth_thread.join(timeout=5)
@@ -1692,12 +1717,15 @@ class _TTSNode(Node):
 
                 # flush remainder
                 if buf and not cancelled:
-                    if t0 is not None:
-                        target = t0 + frames_sent * FRAME_INTERVAL_S
-                        now = _time.monotonic()
-                        if now < target:
-                            _time.sleep(target - now)
-                    publish(buf)
+                    if self._delivery_pacer is not None:
+                        emit(buf)
+                    else:
+                        if t0 is not None:
+                            target = t0 + frames_sent * FRAME_INTERVAL_S
+                            now = _time.monotonic()
+                            if now < target:
+                                _time.sleep(target - now)
+                        publish(buf)
 
                 # Capture before clearing: reading the flag after the clear below
                 # made this always False, so an interrupted utterance reported ACP

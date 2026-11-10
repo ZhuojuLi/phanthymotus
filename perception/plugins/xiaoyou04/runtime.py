@@ -11,14 +11,21 @@ from plugins.kokoro_direct import chunk_ids
 from plugins.xiaoyou04.artifacts import ensure_release
 from plugins.xiaoyou04.frontend_client import FrontendClient
 from utils.resample import downsample_24k_to_16k
+from utils.audio_pacing import AudioLeadPacer
 
 
 class Xiaoyou04Runtime:
     sample_rate = 16000
     dry_run_text = "你好。"
+    # Deliver at most one second ahead of the sample clock. Together with the
+    # browser's 200ms startup lead this fits its existing 1.5s schedule cap.
+    # Other engines retain their original five-frame playback pacing.
+    delivery_lead_seconds = 1.0
 
     def __init__(self, cfg, on_status=None):
         self._lock = threading.RLock()
+        self._pacing_lock = threading.Lock()
+        self._delivery_pacers = {}
         self._frontend = None
         self._session = None
         self._session_key = None
@@ -66,6 +73,15 @@ class Xiaoyou04Runtime:
     @property
     def providers(self):
         return list(self._session.get_providers()) if self._session is not None else []
+
+    def delivery_pacer_for_topic(self, topic):
+        # stop/start replaces the ROS node but retains this adapter. Keep its
+        # channel budget until previously delivered samples finish playing;
+        # EOF alone does not flush a consumer's already scheduled audio.
+        with self._pacing_lock:
+            if topic not in self._delivery_pacers:
+                self._delivery_pacers[topic] = AudioLeadPacer(self.delivery_lead_seconds)
+            return self._delivery_pacers[topic]
 
     def set_speed(self, value):
         value = float(value)

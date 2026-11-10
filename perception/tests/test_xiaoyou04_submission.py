@@ -232,6 +232,21 @@ def test_requested_gpu_cannot_silently_become_cpu(monkeypatch, release_directory
         _runtime(monkeypatch, release_directory, device="gpu")
 
 
+def test_restarting_one_topic_retains_its_budget_without_blocking_other_topics(monkeypatch, release_directory):
+    runtime, _ = _runtime(monkeypatch, release_directory)
+    try:
+        first = runtime.delivery_pacer_for_topic('/first/tts')
+        first.sent(32000, 100.0)
+        restarted = runtime.delivery_pacer_for_topic('/first/tts')
+        assert restarted is first
+        assert restarted.delay(3200, 100.0) == pytest.approx(.1)
+        second = runtime.delivery_pacer_for_topic('/second/tts')
+        assert second is not first
+        assert second.delay(3200, 100.0) == 0
+    finally:
+        runtime.close()
+
+
 def test_speed_changes_do_not_reload_a_resident_model(monkeypatch, release_directory):
     runtime, worker = _runtime(monkeypatch, release_directory)
     try:
