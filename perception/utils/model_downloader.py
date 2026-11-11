@@ -1273,15 +1273,15 @@ VISION_MODEL_BASE = os.environ.get("VISION_MODEL_BASE_URL", f"{COS_BASE}/vision"
 # the file that was uploaded — the point of the pin is to catch a bad transfer,
 # and hashing the source cannot. (Same note as THAI_TTS_ARCHIVE / KOKORO.)
 #
-# B5: 70% B4 + 30% organizer epoch2; canonical 220 classes.
+# B6: B5 plus20-class coverage-trained isolated classifier; canonical220 classes.
 # Separate Orin engines for JP5/JP6, pinned by size and SHA256.
 VOP_MODEL_BUNDLES = {
     "jp61": {
-        "base_url": "http://172.28.4.81:34567/lizhuoju/embodied-ai/vop/b5-blend30-20261110/jp61",
+        "base_url": "http://172.28.4.81:34567/lizhuoju/embodied-ai/vop/b6-coverage20-20261111/jp61",
         "files": {
             "yoloe-26m-det.engine": {
-                "size": 45067393,
-                "sha256": "4fb78b93a48cb4a6ab7eb9b514b6ebdd9f727100e52b86bdeb8ef220b2e33428"
+                "size": 46355418,
+                "sha256": "874d7df20427a2e0ac2bbd0c864697f77fd470225e810f2475430686b85ee154"
             },
             "vocab.json": {
                 "size": 3046,
@@ -1290,11 +1290,11 @@ VOP_MODEL_BUNDLES = {
         }
     },
     "jp511": {
-        "base_url": "http://172.28.4.81:34567/lizhuoju/embodied-ai/vop/b5-blend30-20261110/jp511",
+        "base_url": "http://172.28.4.81:34567/lizhuoju/embodied-ai/vop/b6-coverage20-20261111/jp511",
         "files": {
             "yoloe-26m-det.engine": {
-                "size": 44076517,
-                "sha256": "48def1c137e9d92adcb14218ad1def64b84adae09e0c3afc5c76c94d85e24319"
+                "size": 45513063,
+                "sha256": "81701df5bf33ceb93a271f9b464ffae9e21c49da751176d97b9a6996f1dc01f6"
             },
             "vocab.json": {
                 "size": 3046,
